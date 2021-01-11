@@ -1,4 +1,4 @@
-name: mirge.master
+name: mirgeDriver.Y1nozzle
 channels:
   - conda-forge
 dependencies:
@@ -29,7 +29,7 @@ dependencies:
   - libxml2=2.9.10=h802ca4f_3
   - llvm-openmp=11.0.0=h73239a0_1
   - mako=1.1.3=pyh9f0ad1d_0
-  - markupsafe=1.1.1=py38h94c058a_2
+  - markupsafe=1.1.1=py38h5406a74_3
   - metis=5.1.0=h2e338ed_1006
   - ncurses=6.2=h2e338ed_4
   - numpy=1.19.5=py38h6ced74f_0
@@ -44,7 +44,7 @@ dependencies:
   - pytools=2020.4.4=pyhd3deb0d_0
   - pyvisfile=2020.1=pyh9f0ad1d_0
   - readline=8.0=h0678c8f_2
-  - setuptools=49.6.0=py38h5347e94_2
+  - setuptools=49.6.0=py38h50d1736_3
   - six=1.15.0=pyh9f0ad1d_0
   - sqlite=3.34.0=h17101e1_0
   - tapi=1100.0.11=h9ce4665_0
@@ -85,7 +85,7 @@ dependencies:
     - recursivenodes==0.2.0
     - requests==2.25.1
     - snowballstemmer==2.0.0
-    - sphinx==3.4.2
+    - sphinx==3.4.3
     - sphinxcontrib-applehelp==1.0.2
     - sphinxcontrib-devhelp==1.0.2
     - sphinxcontrib-htmlhelp==1.0.3
@@ -95,4 +95,4 @@ dependencies:
     - toml==0.10.2
     - urllib3==1.26.2
     - urwid==2.1.2
-prefix: /Users/mike/software/Install/Conda/envs/mirge.master
+prefix: /Users/mike/software/Install/Conda/envs/mirgeDriver.Y1nozzle
