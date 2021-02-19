@@ -41,7 +41,6 @@ dependencies:
   - pyopencl=2020.3.1=py38hd731e05_0
   - python=3.8.6=h624753d_4_cpython
   - python_abi=3.8=1_cp38
-  - pytools=2020.4.4=pyhd3deb0d_0
   - pyvisfile=2020.1=pyh9f0ad1d_0
   - readline=8.0=h0678c8f_2
   - setuptools=49.6.0=py38h50d1736_3
@@ -56,6 +55,7 @@ dependencies:
     - alabaster==0.7.12
     - attrs==20.3.0
     - babel==2.9.0
+    - cgen==2020.1
     - chardet==4.0.0
     - codepy==2019.1
     - colorama==0.4.4
@@ -67,6 +67,7 @@ dependencies:
     - imagesize==1.2.0
     - iniconfig==1.1.1
     - jinja2==2.11.2
+    - logpyle==2020.3
     - mccabe==0.6.1
     - mpi4py==3.0.3
     - packaging==20.8
@@ -81,6 +82,7 @@ dependencies:
     - pyparsing==2.4.7
     - pytest==6.2.1
     - pytest-pudb==0.7.0
+    - pytools==2021.1
     - pytz==2020.5
     - recursivenodes==0.2.0
     - requests==2.25.1

@@ -45,6 +45,7 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
+from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.euler import inviscid_operator
 from mirgecom.artificial_viscosity import artificial_viscosity
@@ -57,7 +58,7 @@ from mirgecom.simutil import (
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
-# from mirgecom.checkstate import compare_states
+
 from mirgecom.integrators import rk4_step
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
@@ -71,6 +72,12 @@ from mirgecom.initializers import (
     Discontinuity
 )
 from mirgecom.eos import IdealSingleGas
+
+from logpyle import IntervalTimer
+
+from mirgecom.logging_quantities import (initialize_logmgr,
+    logmgr_add_discretization_quantities, logmgr_add_device_name)
+logger = logging.getLogger(__name__)
 
 
 def get_pseudo_y0_mesh():
@@ -143,21 +150,38 @@ def get_pseudo_y0_mesh():
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context,
          snapshot_pattern="y0euler-{step:06d}-{rank:04d}.pkl",
-         restart_step=None):
+         restart_step=None, use_profiling=False, use_logmgr=False):
     """Drive the Y0 example."""
-    cl_ctx = ctx_factory()
-    queue = cl.CommandQueue(cl_ctx)
-    actx = PyOpenCLArrayContext(queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
-    logger = logging.getLogger(__name__)
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = 0
+    rank = comm.Get_rank()
+    nparts = comm.Get_size()
+
+    """logging and profiling"""
+    logmgr = initialize_logmgr(use_logmgr, use_profiling, filename="y0euler.sqlite",
+        mode="wu", mpi_comm=comm)
+
+    cl_ctx = ctx_factory()
+    if use_profiling:
+        queue = cl.CommandQueue(cl_ctx,
+            properties=cl.command_queue_properties.PROFILING_ENABLE)
+        actx = PyOpenCLProfilingArrayContext(queue,
+            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
+            logmgr=logmgr)
+    else:
+        queue = cl.CommandQueue(cl_ctx)
+        actx = PyOpenCLArrayContext(queue,
+            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+
 
     #nviz = 500
     #nrestart = 500
     nviz = 5
     nrestart = 5
     current_dt = 5e-8
-    t_final = 5.e-1
+    t_final = 5.e-7
 
     dim = 3
     order = 1
@@ -175,8 +199,8 @@ def main(ctx_factory=cl.create_some_context,
     current_t = 0
     casename = "y0euler"
     constant_cfl = False
-    nstatus = 1
-    rank = 0
+    # no internal euler status messages
+    nstatus = 1000000000
     checkpoint_t = current_t
     current_step = 0
 
@@ -236,10 +260,6 @@ def main(ctx_factory=cl.create_some_context,
                   sym.DTAG_BOUNDARY("Outflow"): dummy,
                   sym.DTAG_BOUNDARY("Wall"): wall}
 
-    from mpi4py import MPI
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    nparts = comm.Get_size()
 
     
     #local_mesh, global_nelements = create_parallel_grid(comm,
@@ -290,8 +310,31 @@ def main(ctx_factory=cl.create_some_context,
     ##    current_state[1] = current_state[1] + _make_pulse(amp=50000.0, w=.002,
     ##                                                      r0=orig, r=nodes)
 
+    vis_timer = None
+
+    if logmgr:
+        logmgr_add_device_name(logmgr, queue)
+        logmgr_add_discretization_quantities(logmgr, discr, eos, dim)
+        #logmgr_add_package_versions(logmgr)
+
+        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", 
+                            "min_pressure", "max_pressure", 
+                            "min_temperature", "max_temperature"])
+
+        try:
+            logmgr.add_watches(["memory_usage.max"])
+        except KeyError:
+            pass
+
+        if use_profiling:
+            logmgr.add_watches(["pyopencl_array_time.max"])
+
+        vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
+        logmgr.add_quantity(vis_timer)
+
     visualizer = make_visualizer(discr, discr.order + 3
                                  if discr.dim == 2 else discr.order)
+
     #    initname = initializer.__class__.__name__
     initname = "pseudoY0"
     eosname = eos.__class__.__name__
@@ -335,7 +378,8 @@ def main(ctx_factory=cl.create_some_context,
                               q=state, vizname=casename,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
-                              constant_cfl=constant_cfl, comm=comm, overwrite=True)
+                              constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
+                              overwrite=True)
 
     if rank == 0:
         logging.info("Stepping.")
@@ -344,7 +388,8 @@ def main(ctx_factory=cl.create_some_context,
         advance_state(rhs=my_rhs, timestepper=timestepper,
                       checkpoint=my_checkpoint,
                       get_timestep=get_timestep, state=current_state,
-                      t_final=t_final, t=current_t, istep=current_step)
+                      t_final=t_final, t=current_t, istep=current_step,
+                      logmgr=logmgr,eos=eos,dim=dim)
 
     if rank == 0:
         logger.info("Checkpointing final state ...")
@@ -356,11 +401,19 @@ def main(ctx_factory=cl.create_some_context,
     if current_t - t_final < 0:
         raise ValueError("Simulation exited abnormally")
 
+    if logmgr:
+        logmgr.close()
+    elif use_profiling:
+        print(actx.tabulate_profiling_data())
+
 
 if __name__ == "__main__":
     import sys
     
     logging.basicConfig(format="%(message)s", level=logging.INFO)
+
+    use_logging = True
+    use_profiling = False
 
     # crude command line interface
     # get the restart interval from the command line
@@ -369,9 +422,9 @@ if __name__ == "__main__":
     if nargs > 1:
         restart_step = int(sys.argv[1])
         print(f"Restarting from step {restart_step}")
-        main(restart_step=restart_step)
+        main(restart_step=restart_step,use_profiling=use_profiling,use_logmgr=use_logging)
     else:
         print(f"Starting from step 0")
-        main()
+        main(use_profiling=use_profiling,use_logmgr=use_logging)
 
 # vim: foldmethod=marker
