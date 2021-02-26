@@ -78,8 +78,9 @@ from mirgecom.eos import IdealSingleGas
 
 from logpyle import IntervalTimer
 
+from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
-    logmgr_add_discretization_quantities, logmgr_add_device_name)
+    logmgr_add_many_discretization_quantities, logmgr_add_device_name)
 logger = logging.getLogger(__name__)
 
 
@@ -163,7 +164,7 @@ def main(ctx_factory=cl.create_some_context,
     nparts = comm.Get_size()
 
     """logging and profiling"""
-    logmgr = initialize_logmgr(use_logmgr, use_profiling, filename="y0euler.sqlite",
+    logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
         mode="wu", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
@@ -260,11 +261,11 @@ def main(ctx_factory=cl.create_some_context,
     dummy = DummyBoundary()
 
     alpha_sc = 0.1
-    # sigma is ~p^-4 
-    sigma_sc = -11.0
+    # s0 is ~p^-4 
+    s0_sc = -11.0
     # kappa is empirical ...
     kappa_sc = 0.5
-    print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {sigma_sc}, kappa {kappa_sc}")
+    print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
 
     # timestep estimate
     #wave_speed = max(mach2*c_bkrnd,c_shkd+velocity2[0])
@@ -328,10 +329,11 @@ def main(ctx_factory=cl.create_some_context,
 
     if logmgr:
         logmgr_add_device_name(logmgr, queue)
-        logmgr_add_discretization_quantities(logmgr, discr, eos, dim)
+        logmgr_add_many_discretization_quantities(logmgr, discr, dim,
+            extract_vars_for_logging, units_for_logging)
         #logmgr_add_package_versions(logmgr)
 
-        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max",
+        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_log.max",
                             "min_pressure", "max_pressure",
                             "min_temperature", "max_temperature"])
 
@@ -371,7 +373,7 @@ def main(ctx_factory=cl.create_some_context,
         #return inviscid_operator(discr, eos=eos, boundaries=boundaries, q=state, t=t)
         return ( inviscid_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
                + artificial_viscosity(discr,t=t, r=state, eos=eos, boundaries=boundaries,
-               alpha=alpha_sc, sigma=sigma_sc, kappa=kappa_sc))
+               alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc))
 
     def my_checkpoint(step, t, dt, state):
 
@@ -393,7 +395,7 @@ def main(ctx_factory=cl.create_some_context,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True,sigma=sigma_sc,kappa=kappa_sc)
+                              overwrite=True,s0=s0_sc,kappa=kappa_sc)
 
     if rank == 0:
         logging.info("Stepping.")
