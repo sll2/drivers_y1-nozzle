@@ -1,5 +1,5 @@
 # requirements.txt created by version.sh
-# Date: Thu Feb 25 20:37:56 PST 2021
+# Date: Fri Mar  5 10:11:10 PST 2021
 # Host: lassen709.coral.llnl.gov [Linux lassen709 4.14.0-115.21.2.1chaos.ch6a.ppc64le #1 SMP Fri May 22 11:01:06 PDT 2020 ppc64le ppc64le ppc64le GNU/Linux]
 # Python: /usr/WS1/xpacc/Users/manders/software/Install/Lassen/Conda/envs/mirgeDriver.Y1nozzle/bin/python [Python 3.8.8]
 --editable git+https://github.com/inducer/dagrt.git@d463aff#egg=dagrt
@@ -7,7 +7,7 @@
 --editable git+https://github.com/inducer/leap.git@d30ba46#egg=leap
 --editable git+https://github.com/inducer/loopy.git@v2020.2.1-274-g5dc43053#egg=loopy
 --editable git+https://github.com/inducer/meshmode.git@v2021.1-48-gdb126f1#egg=meshmode
---editable git+https://github.com/illinois-ceesd/mirgecom@13b8a13#egg=mirgecom
+--editable git+https://github.com/illinois-ceesd/mirgecom@24cd25a#egg=mirgecom
 --editable git+https://github.com/inducer/modepy.git@f6ed5c0#egg=modepy
 --editable git+https://github.com/inducer/pymbolic.git@v2020.1-78-g66d2667#egg=pymbolic
 --editable git+https://github.com/inducer/pytato.git@dcb531a#egg=pytato
