@@ -61,7 +61,8 @@ import pyopencl.tools as cl_tools
 # from mirgecom.checkstate import compare_states
 from mirgecom.integrators import (
     rk4_step, 
-    lsrk4_step, 
+    lsrk54_step, 
+    lsrk144_step, 
     euler_step
 )
 from mirgecom.steppers import advance_state
@@ -72,6 +73,7 @@ from mirgecom.boundary import (
 )
 from mirgecom.initializers import (
     Lump,
+    Uniform,
     Discontinuity
 )
 from mirgecom.eos import IdealSingleGas
@@ -183,7 +185,8 @@ def main(ctx_factory=cl.create_some_context,
     #nrestart = 500
     nviz = 100
     nrestart = 100
-    current_dt = 5e-8
+    #current_dt = 2.5e-8 # stable with euler
+    current_dt = 5e-8 # stable with rk4
     t_final = 5.e-1
 
     dim = 3
@@ -238,31 +241,153 @@ def main(ctx_factory=cl.create_some_context,
     #   temperature=297.169
     #   density=2.63872
     #   gamma=1.289
-    pres_inflow=148142
-    temp_inflow=297.169
-    rho_inflow=2.63872
-    mach_inflow=infloM = 0.139145
-    vel_inflow[0] = mach_inflow*math.sqrt(gamma_CO2*pres_inflow/rho_inflow)
+
+    # calculate the inlet Mach number from the area ratio
+    nozzleInletRadius = 13.e-3
+    nozzleThroatRadius = 6.3e-3
+    nozzleInletArea = math.pi*nozzleInletRadius*nozzleInletRadius
+    nozzleThroatArea = math.pi*nozzleThroatRadius*nozzleThroatRadius
+    inletAreaRatio = nozzleInletArea/nozzleThroatArea
+
+    def getMachFromAreaRatio(area_ratio, gamma, mach_guess=0.01):
+        error=1.e-8
+        nextError=1.e8
+        g=gamma
+        M0=mach_guess
+        while nextError > error:
+            R = ((2/(g+1)+((g-1)/(g+1)*M0*M0))**(((g+1)/(2*g-2))))/M0-area_ratio
+            dRdM = (2*((2/(g+1)+((g-1)/(g+1)*M0*M0))**(((g+1)/(2*g-2))))/
+                   (2*g-2)*(g-1)/(2/(g+1)+((g-1)/(g+1)*M0*M0))-
+                   ((2/(g+1)+((g-1)/(g+1)*M0*M0))**(((g+1)/(2*g-2))))* M0**(-2))
+      
+            M1=M0-R/dRdM
+            nextError=abs(R)
+            M0=M1
+
+        return M1
+
+
+    def getIsentropicPressure(mach, P0, gamma):
+        pressure=(1.+(gamma-1.)*0.5*math.pow(mach,2))
+        pressure=P0*math.pow(pressure,(-gamma/(gamma-1.)))
+        return pressure
+
+  
+    def getIsentropicTemperature(mach, T0, gamma):
+      temperature=(1.+(gamma-1.)*0.5*math.pow(mach,2))
+      temperature=T0*math.pow(temperature,-1.0)
+      return temperature
+
+
+    inlet_mach = getMachFromAreaRatio(area_ratio = inletAreaRatio, gamma=gamma_CO2, mach_guess = 0.01);
+    # ramp the stagnation pressure
+    start_ramp_pres = 1000
+    ramp_interval = 1.e-2
+    t_ramp_start = 1e-5
+    pres_inflow = getIsentropicPressure(mach=inlet_mach, P0=start_ramp_pres, gamma=gamma_CO2)
+    temp_inflow = getIsentropicTemperature(mach=inlet_mach, T0=298, gamma=gamma_CO2)
+    rho_inflow = pres_inflow/temp_inflow/R_CO2
+
+    print(f'inlet Mach number {inlet_mach}')
+    print(f'inlet temperature {temp_inflow}')
+    print(f'inlet pressure {pres_inflow}')
+
+    end_ramp_pres = 150000
+    pres_inflow_final = getIsentropicPressure(mach=inlet_mach, P0=end_ramp_pres, gamma=gamma_CO2)
+
+    print(f'final inlet pressure {pres_inflow_final}')
+
+
+    #pres_inflow=148142
+    #temp_inflow=297.169
+    #rho_inflow=2.63872
+    #mach_inflow=infloM = 0.139145
+    vel_inflow[0] = inlet_mach*math.sqrt(gamma_CO2*pres_inflow/rho_inflow)
+
+    # starting pressure for the inflow ramp
 
     timestepper = rk4_step
+    #timestepper = lsrk54_step
+    #timestepper = lsrk144_step
+    #timestepper = euler_step
     eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
-    bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
+    bulk_init = Discontinuity(dim=dim, x0=-.30,sigma=0.005,
+    #bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
                               rhol=rho_inflow, rhor=rho_bkrnd,
                               pl=pres_inflow, pr=pres_bkrnd,
                               ul=vel_inflow, ur=vel_outflow)
-    inflow_init = Lump(dim=dim, rho0=rho_inflow, p0=pres_inflow,
-                       center=orig, velocity=vel_inflow, rhoamp=0.0)
-    outflow_init = Lump(dim=dim, rho0=rho_bkrnd, p0=pres_bkrnd,
-                       center=orig, velocity=vel_outflow, rhoamp=0.0)
+    #inflow_init = Lump(dim=dim, rho0=rho_inflow, p0=pres_inflow,
+                       #center=orig, velocity=vel_inflow, rhoamp=0.0)
+    #outflow_init = Lump(dim=dim, rho0=rho_bkrnd, p0=pres_bkrnd,
+                       #center=orig, velocity=vel_outflow, rhoamp=0.0)
+
+    # pressure ramp function
+    def inflow_ramp_pressure(t, startP=start_ramp_pres, finalP=end_ramp_pres, 
+                             ramp_interval=ramp_interval, t_ramp_start=t_ramp_start):
+      if t > t_ramp_start:
+          rampPressure = min(finalP, startP+(t-t_ramp_start)/ramp_interval*(finalP-startP))
+      else:
+          rampPressure = startP
+      return rampPressure
+
+
+    class IsentropicInflow:
+
+        def __init__(self, *, dim=1, direc=0, T0=298, P0=1e5, mach= 0.01, p_fun = None):
+
+            self._P0 = P0
+            self._T0 = T0
+            self._dim = dim
+            self._direc = direc
+            self._mach = mach
+            if p_fun is not None:
+              self._p_fun = p_fun
+    
+        def __call__(self, x_vec, *, t=0, eos):
+    
+    
+            if self._p_fun is not None:
+                P0 = self._p_fun(t)
+            else:
+                P0 = self._P0
+            T0 = self._T0
+
+            gamma = eos.gamma()
+            gas_const = eos.gas_const()
+            pressure = getIsentropicPressure(mach=self._mach, P0=P0, gamma=gamma)
+            temperature = getIsentropicTemperature(mach=self._mach, T0=T0, gamma=gamma)
+            rho = pressure/temperature/gas_const
+
+            #print(f'ramp Mach number {self._mach}')
+            #print(f'ramp stagnation pressure {P0}')
+            #print(f'ramp stagnation temperature {T0}')
+            #print(f'ramp pressure {pressure}')
+            #print(f'ramp temperature {temperature}')
+
+            velocity = np.zeros(shape=(self._dim,)) 
+            velocity[self._direc] = self._mach*math.sqrt(gamma*pressure/rho)
+    
+            mass = 0.0*x_vec[0] + rho
+            mom = velocity*mass
+            energy = (pressure/(gamma - 1.0)) + np.dot(mom, mom)/(2.0*mass)
+            from mirgecom.euler import join_conserved
+            return join_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy)
+
+
+    inflow_init = IsentropicInflow(dim=dim, T0=298, P0=start_ramp_pres, 
+                                   mach = inlet_mach , p_fun=inflow_ramp_pressure)
+    outflow_init = Uniform(dim=dim, rho=rho_bkrnd, p=pres_bkrnd,
+                           velocity=vel_outflow)
 
     inflow = PrescribedBoundary(inflow_init)
     outflow = PrescribedBoundary(outflow_init)
     wall = AdiabaticSlipBoundary()
     dummy = DummyBoundary()
 
-    alpha_sc = 0.1
+    alpha_sc = 0.5
     # s0 is ~p^-4 
-    s0_sc = -11.0
+    #s0_sc = -11.0
+    s0_sc = -5.0
     # kappa is empirical ...
     kappa_sc = 0.5
     print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
@@ -281,16 +406,9 @@ def main(ctx_factory=cl.create_some_context,
     #print(f"Viscous timestep estimate {dt_est_visc}\n")
 
     from grudge import sym
-#    boundaries = {BTAG_ALL: DummyBoundary}
-
     boundaries = {sym.DTAG_BOUNDARY("Inflow"): inflow,
                   sym.DTAG_BOUNDARY("Outflow"): outflow,
                   sym.DTAG_BOUNDARY("Wall"): wall}
-
-    #local_mesh, global_nelements = create_parallel_grid(comm,
-                                                        #get_pseudo_y0_mesh)
-#
-    #local_nelements = local_mesh.nelements
 
     if restart_step is None:
         local_mesh, global_nelements = create_parallel_grid(comm, get_pseudo_y0_mesh)
@@ -316,7 +434,10 @@ def main(ctx_factory=cl.create_some_context,
     if restart_step is None:
         if rank == 0:
             logging.info("Initializing soln.")
+        # for Discontinuity initial conditions
         current_state = bulk_init(0, nodes, eos=eos)
+        # for uniform background initial condition
+        #current_state = bulk_init(nodes, eos=eos)
     else:
         current_t = restart_data["t"]
         current_step = restart_step

@@ -186,7 +186,7 @@ def main(ctx_factory=cl.create_some_context,
     nviz = 100
     nrestart = 100
     #current_dt = 2.5e-8 # stable with euler
-    current_dt = 1e-7
+    current_dt = 2e-7
     t_final = 5.e-1
 
     dim = 3
