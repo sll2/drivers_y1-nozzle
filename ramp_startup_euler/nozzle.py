@@ -61,7 +61,8 @@ import pyopencl.tools as cl_tools
 # from mirgecom.checkstate import compare_states
 from mirgecom.integrators import (
     rk4_step, 
-    lsrk4_step, 
+    lsrk54_step, 
+    lsrk144_step, 
     euler_step
 )
 from mirgecom.steppers import advance_state
@@ -166,7 +167,7 @@ def main(ctx_factory=cl.create_some_context,
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
-        mode="wu", mpi_comm=comm)
+        mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
@@ -184,7 +185,8 @@ def main(ctx_factory=cl.create_some_context,
     #nrestart = 500
     nviz = 100
     nrestart = 100
-    current_dt = 5e-8
+    current_dt = 2.5e-8 # stable with euler
+    #current_dt = 4e-7 # stable with lrsrk144
     t_final = 5.e-1
 
     dim = 3
@@ -279,16 +281,21 @@ def main(ctx_factory=cl.create_some_context,
 
     inlet_mach = getMachFromAreaRatio(area_ratio = inletAreaRatio, gamma=gamma_CO2, mach_guess = 0.01);
     # ramp the stagnation pressure
-    start_ramp_pres = 200
-    end_ramp_pres = 150000
-    ramp_interval = 1.e-3
+    start_ramp_pres = 1000
+    ramp_interval = 5.e-3
+    t_ramp_start = 1e-5
     pres_inflow = getIsentropicPressure(mach=inlet_mach, P0=start_ramp_pres, gamma=gamma_CO2)
     temp_inflow = getIsentropicTemperature(mach=inlet_mach, T0=298, gamma=gamma_CO2)
     rho_inflow = pres_inflow/temp_inflow/R_CO2
 
     print(f'inlet Mach number {inlet_mach}')
-    print(f'inlet stagnation pressure {pres_inflow}')
-    print(f'inlet stagnation temperature {temp_inflow}')
+    print(f'inlet temperature {temp_inflow}')
+    print(f'inlet pressure {pres_inflow}')
+
+    end_ramp_pres = 150000
+    pres_inflow_final = getIsentropicPressure(mach=inlet_mach, P0=end_ramp_pres, gamma=gamma_CO2)
+
+    print(f'final inlet pressure {pres_inflow_final}')
 
 
     #pres_inflow=148142
@@ -299,9 +306,13 @@ def main(ctx_factory=cl.create_some_context,
 
     # starting pressure for the inflow ramp
 
-    timestepper = rk4_step
+    #timestepper = rk4_step
+    #timestepper = lsrk54_step
+    #timestepper = lsrk144_step
+    timestepper = euler_step
     eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
-    bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
+    bulk_init = Discontinuity(dim=dim, x0=-.30,sigma=0.005,
+    #bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
                               rhol=rho_inflow, rhor=rho_bkrnd,
                               pl=pres_inflow, pr=pres_bkrnd,
                               ul=vel_inflow, ur=vel_outflow)
@@ -312,8 +323,11 @@ def main(ctx_factory=cl.create_some_context,
 
     # pressure ramp function
     def inflow_ramp_pressure(t, startP=start_ramp_pres, finalP=end_ramp_pres, 
-                             ramp_interval=ramp_interval):
-      rampPressure = min(finalP, startP+t/ramp_interval*(finalP-startP))
+                             ramp_interval=ramp_interval, t_ramp_start=t_ramp_start):
+      if t > t_ramp_start:
+          rampPressure = min(finalP, startP+(t-t_ramp_start)/ramp_interval*(finalP-startP))
+      else:
+          rampPressure = startP
       return rampPressure
 
 
@@ -370,9 +384,10 @@ def main(ctx_factory=cl.create_some_context,
     wall = AdiabaticSlipBoundary()
     dummy = DummyBoundary()
 
-    alpha_sc = 0.1
+    alpha_sc = 0.5
     # s0 is ~p^-4 
-    s0_sc = -11.0
+    #s0_sc = -11.0
+    s0_sc = -5.0
     # kappa is empirical ...
     kappa_sc = 0.5
     print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
