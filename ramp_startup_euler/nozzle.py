@@ -167,7 +167,7 @@ def main(ctx_factory=cl.create_some_context,
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
-        mode="wu", mpi_comm=comm)
+        mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
@@ -185,8 +185,8 @@ def main(ctx_factory=cl.create_some_context,
     #nrestart = 500
     nviz = 100
     nrestart = 100
-    #current_dt = 2.5e-8 # stable with euler
-    current_dt = 2e-7
+    current_dt = 2.5e-8 # stable with euler
+    #current_dt = 4e-7 # stable with lrsrk144
     t_final = 5.e-1
 
     dim = 3
@@ -282,7 +282,7 @@ def main(ctx_factory=cl.create_some_context,
     inlet_mach = getMachFromAreaRatio(area_ratio = inletAreaRatio, gamma=gamma_CO2, mach_guess = 0.01);
     # ramp the stagnation pressure
     start_ramp_pres = 1000
-    ramp_interval = 1.e-2
+    ramp_interval = 5.e-3
     t_ramp_start = 1e-5
     pres_inflow = getIsentropicPressure(mach=inlet_mach, P0=start_ramp_pres, gamma=gamma_CO2)
     temp_inflow = getIsentropicTemperature(mach=inlet_mach, T0=298, gamma=gamma_CO2)
@@ -308,8 +308,8 @@ def main(ctx_factory=cl.create_some_context,
 
     #timestepper = rk4_step
     #timestepper = lsrk54_step
-    timestepper = lsrk144_step
-    #timestepper = euler_step
+    #timestepper = lsrk144_step
+    timestepper = euler_step
     eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
     bulk_init = Discontinuity(dim=dim, x0=-.30,sigma=0.005,
     #bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
