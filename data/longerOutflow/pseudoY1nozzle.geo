@@ -11,7 +11,7 @@ Mesh.Algorithm3D = 4;
 Mesh.Smoothing = 100;
 
 Mesh.CharacteristicLengthMin = 1;
-Mesh.CharacteristicLengthMax = 5;
+Mesh.CharacteristicLengthMax = 8;
 Mesh.CharacteristicLengthExtendFromBoundary = 0;
 Mesh.CharacteristicLengthFromPoints = 0;
 Mesh.CharacteristicLengthFromCurvature = 0;
