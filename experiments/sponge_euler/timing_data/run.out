@@ -1,0 +1,86 @@
+Running ./nozzle.py
+
+Restarting from step 61300
+/p/gpfs1/manders/work/CEESD/Drivers/CEESD-Y1_nozzle/emirge/mirgecom/mirgecom/logging_quantities.py:68: UserWarning: psutil module not found, not tracking memory consumption.Install it with 'pip install psutil'
+  warn("psutil module not found, not tracking memory consumption."
+inlet Mach number 0.13914536705094316
+inlet temperature 297.16860334713266
+inlet pressure 987.6162965049273
+final inlet pressure 148142.4444757391
+Shock capturing parameters: alpha 0.5, s0 -5.0, kappa 0.5
+Making discretization
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+./nozzle.py:502: DeprecationWarning: DGDiscretizationWithBoundaries.order is deprecated, consider using the orders of element groups instead. 'order' will go away in 2021.
+  if discr.dim == 2 else discr.order)
+Initialization for Case(y0euler)
+===
+Num 3d order-1 elements: 130258
+Num global elements: 130258
+Timestep:        2.5e-08
+Final time:      0.5
+CFL:             1.0
+Constant CFL:    False
+Initialization:  pseudoY0
+EOS:             IdealSingleGas
+
+Stepping.
+do_viz False step 61300 interval 250
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+step.max=61300 | t_sim.max=0.0015325 | t_step.max=15.5214 | t_log.max=0 | min_pressure=0 | max_pressure=0 | min_temperature=0 | max_temperature=0
+do_viz False step 61301 interval 250
+step.max=61301 | t_sim.max=0.00153253 | t_step.max=0.527502 | t_log.max=0.0549808 | min_pressure=9261.32 | max_pressure=45795.9 | min_temperature=246.238 | max_temperature=316.94
+do_viz False step 61302 interval 250
+step.max=61302 | t_sim.max=0.00153255 | t_step.max=0.510867 | t_log.max=0.446696 | min_pressure=11274.2 | max_pressure=45796.6 | min_temperature=254.899 | max_temperature=316.94
+do_viz False step 61303 interval 250
+step.max=61303 | t_sim.max=0.00153258 | t_step.max=0.510517 | t_log.max=0.013181 | min_pressure=13448.1 | max_pressure=45797.4 | min_temperature=263.569 | max_temperature=316.939
+do_viz False step 61304 interval 250
+step.max=61304 | t_sim.max=0.0015326 | t_step.max=0.509655 | t_log.max=0.0131588 | min_pressure=15298.9 | max_pressure=45798.1 | min_temperature=269.569 | max_temperature=316.939
+do_viz False step 61305 interval 250
+step.max=61305 | t_sim.max=0.00153263 | t_step.max=0.509917 | t_log.max=0.0131893 | min_pressure=18639.8 | max_pressure=45798.8 | min_temperature=279.331 | max_temperature=316.939
+do_viz False step 61306 interval 250
+step.max=61306 | t_sim.max=0.00153265 | t_step.max=0.510315 | t_log.max=0.0131316 | min_pressure=22243.2 | max_pressure=45799.6 | min_temperature=288.435 | max_temperature=316.939
+do_viz False step 61307 interval 250
+step.max=61307 | t_sim.max=0.00153268 | t_step.max=0.510337 | t_log.max=0.0131228 | min_pressure=25833.7 | max_pressure=45800.3 | min_temperature=294.131 | max_temperature=316.939
+do_viz False step 61308 interval 250
+step.max=61308 | t_sim.max=0.0015327 | t_step.max=0.51024 | t_log.max=0.0131068 | min_pressure=29211.9 | max_pressure=45801 | min_temperature=294.131 | max_temperature=316.939
+do_viz False step 61309 interval 250
+step.max=61309 | t_sim.max=0.00153273 | t_step.max=0.510362 | t_log.max=0.0131876 | min_pressure=32986 | max_pressure=45801.8 | min_temperature=294.131 | max_temperature=316.938
+do_viz False step 61310 interval 250
+step.max=61310 | t_sim.max=0.00153275 | t_step.max=0.509709 | t_log.max=0.013155 | min_pressure=35203.7 | max_pressure=45802.5 | min_temperature=294.131 | max_temperature=316.938
+do_viz False step 61311 interval 250
+step.max=61311 | t_sim.max=0.00153278 | t_step.max=0.509356 | t_log.max=0.0131693 | min_pressure=38971.6 | max_pressure=45803.2 | min_temperature=294.131 | max_temperature=316.938
+do_viz False step 61312 interval 250
+step.max=61312 | t_sim.max=0.0015328 | t_step.max=0.510702 | t_log.max=0.0131466 | min_pressure=40408.9 | max_pressure=45804 | min_temperature=294.131 | max_temperature=316.938
+do_viz False step 61313 interval 250
+step.max=61313 | t_sim.max=0.00153283 | t_step.max=0.51043 | t_log.max=0.0131245 | min_pressure=41708.7 | max_pressure=45804.7 | min_temperature=294.131 | max_temperature=316.617
+do_viz False step 61314 interval 250
+step.max=61314 | t_sim.max=0.00153285 | t_step.max=0.509808 | t_log.max=0.0131567 | min_pressure=42606.9 | max_pressure=45805.4 | min_temperature=294.131 | max_temperature=316.482
+do_viz False step 61315 interval 250
+step.max=61315 | t_sim.max=0.00153288 | t_step.max=0.510002 | t_log.max=0.0130892 | min_pressure=42607.7 | max_pressure=45806.2 | min_temperature=294.131 | max_temperature=314.328
+do_viz False step 61316 interval 250
+step.max=61316 | t_sim.max=0.0015329 | t_step.max=0.509944 | t_log.max=0.013118 | min_pressure=42608.4 | max_pressure=45806.9 | min_temperature=294.131 | max_temperature=313.456
+do_viz False step 61317 interval 250
+step.max=61317 | t_sim.max=0.00153293 | t_step.max=0.509899 | t_log.max=0.0130701 | min_pressure=42609.1 | max_pressure=45807.7 | min_temperature=294.131 | max_temperature=311.085
+do_viz False step 61318 interval 250
+step.max=61318 | t_sim.max=0.00153295 | t_step.max=0.509866 | t_log.max=0.013139 | min_pressure=42609.9 | max_pressure=45808.4 | min_temperature=294.131 | max_temperature=307.425
+do_viz False step 61319 interval 250
+step.max=61319 | t_sim.max=0.00153298 | t_step.max=0.5099 | t_log.max=0.0130587 | min_pressure=42610.6 | max_pressure=45809.1 | min_temperature=294.132 | max_temperature=304.667
+do_viz False step 61320 interval 250
+step.max=61320 | t_sim.max=0.001533 | t_step.max=0.509942 | t_log.max=0.0131285 | min_pressure=42955.2 | max_pressure=45809.9 | min_temperature=294.132 | max_temperature=300.386
+do_viz False step 61321 interval 250
+step.max=61321 | t_sim.max=0.00153303 | t_step.max=0.50996 | t_log.max=0.0130692 | min_pressure=43000.3 | max_pressure=45810.6 | min_temperature=294.132 | max_temperature=298.012
+do_viz False step 61322 interval 250
+step.max=61322 | t_sim.max=0.00153305 | t_step.max=0.509897 | t_log.max=0.0130947 | min_pressure=43249.3 | max_pressure=45807.3 | min_temperature=294.335 | max_temperature=297.16
+do_viz False step 61323 interval 250
+step.max=61323 | t_sim.max=0.00153308 | t_step.max=0.509821 | t_log.max=0.0130634 | min_pressure=43545.8 | max_pressure=45808 | min_temperature=294.625 | max_temperature=297.16
+do_viz False step 61324 interval 250
+Non-finite values detected in simulation, exiting...
+do_viz True step 999999999 interval 1

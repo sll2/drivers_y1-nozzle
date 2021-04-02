@@ -4,3 +4,5 @@ emirge
 *.pkl
 myenv.yml
 myreqs.txt
+runError*
+runOutput*

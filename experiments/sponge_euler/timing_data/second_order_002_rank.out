@@ -1,0 +1,79 @@
+Running ./nozzle.py
+
+Starting from step 0
+Running ./nozzle.py
+
+Starting from step 0
+/p/gpfs1/manders/work/CEESD/Drivers/CEESD-Y1_nozzle/emirge/mirgecom/mirgecom/logging_quantities.py:68: UserWarning: psutil module not found, not tracking memory consumption.Install it with 'pip install psutil'
+  warn("psutil module not found, not tracking memory consumption."
+/p/gpfs1/manders/work/CEESD/Drivers/CEESD-Y1_nozzle/emirge/mirgecom/mirgecom/logging_quantities.py:68: UserWarning: psutil module not found, not tracking memory consumption.Install it with 'pip install psutil'
+  warn("psutil module not found, not tracking memory consumption."
+inlet Mach number 0.13914536705094316
+inlet temperature 297.16860334713266
+inlet pressure 987.6162965049273
+final inlet pressure 148142.4444757391
+Shock capturing parameters: alpha 0.5, s0 -5.0, kappa 0.5
+rank 0: sent all mesh partitions
+Making discretization
+rank 1: received local mesh (size = 10344805)
+building face restriction: start
+building face restriction: start
+building face restriction: done
+bdry comm rank 0 send begin
+building face restriction: done
+bdry comm rank 1 send begin
+building face restriction: start
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+building face restriction: start
+building face restriction: done
+building face restriction: done
+./nozzle.py:507: DeprecationWarning: DGDiscretizationWithBoundaries.order is deprecated, consider using the orders of element groups instead. 'order' will go away in 2021.
+  if discr.dim == 2 else discr.order)
+Initializing soln.
+./nozzle.py:507: DeprecationWarning: DGDiscretizationWithBoundaries.order is deprecated, consider using the orders of element groups instead. 'order' will go away in 2021.
+  if discr.dim == 2 else discr.order)
+Initialization for Case(y0euler)
+===
+Num 3d order-2 elements: 65129
+Num global elements: 130258
+Timestep:        2.5e-08
+Final time:      2.5e-07
+CFL:             1.0
+Constant CFL:    False
+Initialization:  pseudoY0
+EOS:             IdealSingleGas
+
+Stepping.
+Status: step=0 t=0
+------- P(100, 988)
+------- T(297, 298)
+------- dt=2.5e-08 cfl=1.0
+building face restriction: start
+building face restriction: start
+building face restriction: done
+building face restriction: done
+building face restriction: start
+building face restriction: start
+building face restriction: done
+building face restriction: done
+build program: kernel 'unflatten' was part of a lengthy cache retrieval (1.00 s)
+build program: kernel 'grudge_assign_0' was part of a lengthy cache retrieval (1.00 s)
+step.max=0 | t_sim.max=0 | t_step.max=17.3812 | t_log.max=0 | min_pressure=0 | max_pressure=0 | min_temperature=0 | max_temperature=0
+build program: kernel 'grudge_assign_0' was part of a lengthy cache retrieval (1.00 s)
+step.max=1 | t_sim.max=2.5e-08 | t_step.max=1.54855 | t_log.max=0.0662932 | min_pressure=100 | max_pressure=988.831 | min_temperature=297.074 | max_temperature=297.995
+step.max=2 | t_sim.max=5e-08 | t_step.max=0.566097 | t_log.max=1.32908 | min_pressure=100 | max_pressure=989.896 | min_temperature=296.976 | max_temperature=298.681
+step.max=3 | t_sim.max=7.5e-08 | t_step.max=0.549881 | t_log.max=0.0140347 | min_pressure=100 | max_pressure=993.14 | min_temperature=296.905 | max_temperature=299.063
+step.max=4 | t_sim.max=1e-07 | t_step.max=0.550167 | t_log.max=0.0140936 | min_pressure=100 | max_pressure=998.387 | min_temperature=296.892 | max_temperature=299.086
+step.max=5 | t_sim.max=1.25e-07 | t_step.max=0.55049 | t_log.max=0.0141928 | min_pressure=100 | max_pressure=1000.53 | min_temperature=296.873 | max_temperature=299.183
+step.max=6 | t_sim.max=1.5e-07 | t_step.max=0.550751 | t_log.max=0.0142195 | min_pressure=100 | max_pressure=1001.13 | min_temperature=296.857 | max_temperature=299.246
+step.max=7 | t_sim.max=1.75e-07 | t_step.max=0.549645 | t_log.max=0.0141799 | min_pressure=100 | max_pressure=1003.17 | min_temperature=296.845 | max_temperature=299.246
+step.max=8 | t_sim.max=2e-07 | t_step.max=0.549682 | t_log.max=0.0139899 | min_pressure=100 | max_pressure=1004 | min_temperature=296.841 | max_temperature=299.299
+step.max=9 | t_sim.max=2.25e-07 | t_step.max=0.549791 | t_log.max=0.0142031 | min_pressure=100 | max_pressure=1003.81 | min_temperature=296.86 | max_temperature=299.363
+Checkpointing final state ...
