@@ -47,14 +47,15 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
-from mirgecom.euler import inviscid_operator, split_conserved
+from mirgecom.euler import euler_operator
+from mirgecom.fluid import split_conserved
 from mirgecom.artificial_viscosity import artificial_viscosity
 from mirgecom.tag_cells import smoothness_indicator
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
     check_step,
-    create_parallel_grid
+    generate_and_distribute_mesh
 )
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
@@ -84,7 +85,7 @@ from logpyle import IntervalTimer
 
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
-    logmgr_add_many_discretization_quantities, logmgr_add_device_name)
+    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info)
 logger = logging.getLogger(__name__)
 
 
@@ -300,11 +301,6 @@ def main(ctx_factory=cl.create_some_context,
 
     print(f'final inlet pressure {pres_inflow_final}')
 
-
-    #pres_inflow=148142
-    #temp_inflow=297.169
-    #rho_inflow=2.63872
-    #mach_inflow=infloM = 0.139145
     vel_inflow[0] = inlet_mach*math.sqrt(gamma_CO2*pres_inflow/rho_inflow)
 
     # starting pressure for the inflow ramp
@@ -315,14 +311,9 @@ def main(ctx_factory=cl.create_some_context,
     #timestepper = euler_step
     eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
     bulk_init = Discontinuity(dim=dim, x0=-.30,sigma=0.005,
-    #bulk_init = Discontinuity(dim=dim, x0=-.31,sigma=0.04,
-                              rhol=rho_inflow, rhor=rho_bkrnd,
+                              tl=temp_inflow, tr=temp_bkrnd,
                               pl=pres_inflow, pr=pres_bkrnd,
                               ul=vel_inflow, ur=vel_outflow)
-    #inflow_init = Lump(dim=dim, rho0=rho_inflow, p0=pres_inflow,
-                       #center=orig, velocity=vel_inflow, rhoamp=0.0)
-    #outflow_init = Lump(dim=dim, rho0=rho_bkrnd, p0=pres_bkrnd,
-                       #center=orig, velocity=vel_outflow, rhoamp=0.0)
 
     # pressure ramp function
     def inflow_ramp_pressure(t, startP=start_ramp_pres, finalP=end_ramp_pres, 
@@ -373,7 +364,7 @@ def main(ctx_factory=cl.create_some_context,
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
             energy = (pressure/(gamma - 1.0)) + np.dot(mom, mom)/(2.0*mass)
-            from mirgecom.euler import join_conserved
+            from mirgecom.fluid import join_conserved
             return join_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy)
 
 
@@ -416,7 +407,7 @@ def main(ctx_factory=cl.create_some_context,
                   sym.DTAG_BOUNDARY("Wall"): wall}
 
     if restart_step is None:
-        local_mesh, global_nelements = create_parallel_grid(comm, get_pseudo_y0_mesh)
+        local_mesh, global_nelements = generate_and_distribute_mesh(comm, get_pseudo_y0_mesh)
         local_nelements = local_mesh.nelements
 
     else:  # Restart
@@ -447,17 +438,15 @@ def main(ctx_factory=cl.create_some_context,
             zeros+((nodes[0]-x0)/thickness)*((nodes[0]-x0)/thickness),
             zeros+0.0))
 
-
     zeros = 0 * nodes[0]
     sponge_sigma =  gen_sponge()
-    ref_state = bulk_init(0, nodes, eos=eos)
-
+    ref_state = bulk_init(x_vec=nodes, eos=eos, t=0.0)
 
     if restart_step is None:
         if rank == 0:
             logging.info("Initializing soln.")
         # for Discontinuity initial conditions
-        current_state = bulk_init(0, nodes, eos=eos)
+        current_state = bulk_init(x_vec=nodes, eos=eos, t=0.0)
         # for uniform background initial condition
         #current_state = bulk_init(nodes, eos=eos)
     else:
@@ -471,7 +460,7 @@ def main(ctx_factory=cl.create_some_context,
     vis_timer = None
 
     if logmgr:
-        logmgr_add_device_name(logmgr, queue)
+        logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_many_discretization_quantities(logmgr, discr, dim,
             extract_vars_for_logging, units_for_logging)
         #logmgr_add_package_versions(logmgr)
@@ -491,8 +480,8 @@ def main(ctx_factory=cl.create_some_context,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr, discr.order + 3
-                                 if discr.dim == 2 else discr.order)
+    visualizer = make_visualizer(discr, order + 3
+                                 if discr.dim == 2 else order)
     #    initname = initializer.__class__.__name__
     initname = "pseudoY0"
     eosname = eos.__class__.__name__
@@ -533,7 +522,7 @@ def main(ctx_factory=cl.create_some_context,
                               viz_fields=viz_fields)
             exit()
 
-        return ( inviscid_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
+        return ( euler_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
                + artificial_viscosity(discr,t=t, r=state, eos=eos, boundaries=boundaries,
                alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
                + sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
