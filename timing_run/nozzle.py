@@ -77,7 +77,7 @@ from mirgecom.boundary import (
 from mirgecom.initializers import (
     Lump,
     Uniform,
-    Discontinuity
+    PlanarDiscontinuity
 )
 from mirgecom.eos import IdealSingleGas
 
@@ -310,10 +310,10 @@ def main(ctx_factory=cl.create_some_context,
     #timestepper = lsrk144_step
     #timestepper = euler_step
     eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
-    bulk_init = Discontinuity(dim=dim, x0=-.30,sigma=0.005,
-                              tl=temp_inflow, tr=temp_bkrnd,
-                              pl=pres_inflow, pr=pres_bkrnd,
-                              ul=vel_inflow, ur=vel_outflow)
+    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=-.30, sigma=0.005,
+                              temperature_left=temp_inflow, temperature_right=temp_bkrnd,
+                              pressure_left=pres_inflow, pressure_right=pres_bkrnd,
+                              velocity_left=vel_inflow, velocity_right=vel_outflow)
 
     # pressure ramp function
     def inflow_ramp_pressure(t, startP=start_ramp_pres, finalP=end_ramp_pres, 
