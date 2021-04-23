@@ -47,7 +47,7 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
-from mirgecom.euler import euler_operator
+from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
 from mirgecom.artificial_viscosity import av_operator
 from mirgecom.tag_cells import smoothness_indicator
@@ -70,8 +70,7 @@ from mirgecom.integrators import (
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedBoundary,
-    AdiabaticSlipBoundary,
-    DummyBoundary
+    IsothermalNoSlipBoundary
 )
 from mirgecom.initializers import (
     Lump,
@@ -79,6 +78,7 @@ from mirgecom.initializers import (
     PlanarDiscontinuity
 )
 from mirgecom.eos import IdealSingleGas
+from mirgecom.transport import SimpleTransport
 
 from logpyle import IntervalTimer
 
@@ -156,9 +156,9 @@ def get_pseudo_y0_mesh():
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context,
-         snapshot_pattern="y0euler-{step:06d}-{rank:04d}.pkl",
-         restart_step=None, use_profiling=False, use_logmgr=False):
+def main(ctx_factory=cl.create_some_context, 
+         snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl", restart_step=None, 
+         use_profiling=False, use_logmgr=False, use_lazy_eval=False):
     """Drive the Y0 example."""
 
     from mpi4py import MPI
@@ -166,13 +166,15 @@ def main(ctx_factory=cl.create_some_context,
     rank = 0
     rank = comm.Get_rank()
     nparts = comm.Get_size()
+    casename = "nozzle"
 
-    """logging and profiling"""
-    logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
+    logmgr = initialize_logmgr(use_logmgr, filename="{casename}.sqlite",
         mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
+        if use_lazy_eval:
+            raise RuntimeError("Cannot run lazy with profiling.")
         queue = cl.CommandQueue(cl_ctx,
             properties=cl.command_queue_properties.PROFILING_ENABLE)
         actx = PyOpenCLProfilingArrayContext(queue,
@@ -180,8 +182,11 @@ def main(ctx_factory=cl.create_some_context,
             logmgr=logmgr)
     else:
         queue = cl.CommandQueue(cl_ctx)
-        actx = PyOpenCLArrayContext(queue,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+        if use_lazy_eval:
+            actx = PytatoArrayContext(queue)
+        else:
+            actx = PyOpenCLArrayContext(queue,
+                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
     #nviz = 500
     #nrestart = 500
@@ -206,7 +211,6 @@ def main(ctx_factory=cl.create_some_context,
     #vel[0] = 340.0
     #vel_inflow[0] = 100.0  # m/s
     current_t = 0
-    casename = "y0euler"
     constant_cfl = False
     nstatus = 10000000000
     rank = 0
@@ -308,7 +312,10 @@ def main(ctx_factory=cl.create_some_context,
     #timestepper = lsrk54_step
     #timestepper = lsrk144_step
     #timestepper = euler_step
-    eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
+    mu = 1.e-5
+    kappa = rho_bkrnd*mu/0.75
+    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
+    eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2, transport_model=transport_model)
     bulk_init = PlanarDiscontinuity(dim=dim, disc_location=-.30, sigma=0.005,
                               temperature_left=temp_inflow, temperature_right=temp_bkrnd,
                               pressure_left=pres_inflow, pressure_right=pres_bkrnd,
@@ -372,10 +379,9 @@ def main(ctx_factory=cl.create_some_context,
     outflow_init = Uniform(dim=dim, rho=rho_bkrnd, p=pres_bkrnd,
                            velocity=vel_outflow)
 
-    inflow = PrescribedBoundary(inflow_init)
-    outflow = PrescribedBoundary(outflow_init)
-    wall = AdiabaticSlipBoundary()
-    dummy = DummyBoundary()
+    inflow = PrescribedViscousBoundary(inflow_init)
+    outflow = PrescribedViscousBoundary(outflow_init)
+    wall = IsothermalNoSlipBoundary()
 
 
     alpha_sc = 0.5
@@ -409,7 +415,7 @@ def main(ctx_factory=cl.create_some_context,
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        with open(snapshot_pattern.format(step=restart_step, rank=rank), "rb") as f:
+        with open(snapshot_pattern.format(casename=casename, step=restart_step, rank=rank), "rb") as f:
             restart_data = pickle.load(f)
 
         local_mesh = restart_data["local_mesh"]
@@ -480,7 +486,6 @@ def main(ctx_factory=cl.create_some_context,
 
     visualizer = make_visualizer(discr, order + 3
                                  if discr.dim == 2 else order)
-    #    initname = initializer.__class__.__name__
     initname = "pseudoY0"
     eosname = eos.__class__.__name__
     init_message = make_init_message(dim=dim, order=order,
@@ -520,17 +525,18 @@ def main(ctx_factory=cl.create_some_context,
                               viz_fields=viz_fields)
             exit()
 
-        return ( euler_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
+        return ( ns_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
                + av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
-               alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+                 alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
                + sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
+
 
     def my_checkpoint(step, t, dt, state):
 
         write_restart = (check_step(step, nrestart)
                          if step != restart_step else False)
         if write_restart is True:
-            with open(snapshot_pattern.format(step=step, rank=rank), "wb") as f:
+            with open(snapshot_pattern.format(casename=casename, step=step, rank=rank), "wb") as f:
                 pickle.dump({
                     "local_mesh": local_mesh,
                     "state": obj_array_vectorize(actx.to_numpy, flatten(state)),
@@ -585,19 +591,30 @@ if __name__ == "__main__":
     
     logging.basicConfig(format="%(message)s", level=logging.INFO)
 
-    use_logging = True
-    use_profiling = False
+    import argparse
+    parser = argparse.ArgumentParser(description="MIRGE-Com Isentropic Nozzle Driver")
+    parser.add_argument('-r', '--restart_file',  type=ascii, 
+                        dest='restart_file', nargs='?', action='store', 
+                        help='simulation restart file')
+    parser.add_argument("--profile", action="store_true", default=False,
+        help="enable kernel profiling [OFF]")
+    parser.add_argument("--log", action="store_true", default=True,
+        help="enable logging profiling [ON]")
+    parser.add_argument("--lazy", action="store_true", default=False,
+        help="enable lazy evaluation [OFF]")
 
-    # crude command line interface
-    # get the restart interval from the command line
+    args = parser.parse_args()
+
+    snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl"
+    restart_step=None
+    if(args.restart_file):
+        print(f"Restarting from file {args.restart_file}")
+        restart_step = args.restart_file.split('-')[1]
+        print(f"step {restart_step}")
+    
+
     print(f"Running {sys.argv[0]}\n")
-    nargs = len(sys.argv)
-    if nargs > 1:
-        restart_step = int(sys.argv[1])
-        print(f"Restarting from step {restart_step}")
-        main(restart_step=restart_step,use_profiling=use_profiling,use_logmgr=use_logging)
-    else:
-        print(f"Starting from step 0")
-        main(use_profiling=use_profiling,use_logmgr=use_logging)
+    main(restart_step=restart_step, snapshot_pattern=snapshot_pattern,
+         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
 
 # vim: foldmethod=marker
