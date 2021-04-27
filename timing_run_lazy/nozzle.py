@@ -48,6 +48,7 @@ from grudge.shortcuts import make_visualizer
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.euler import euler_operator
+from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
 from mirgecom.artificial_viscosity import av_operator
 from mirgecom.tag_cells import smoothness_indicator
@@ -71,7 +72,9 @@ from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedBoundary,
     AdiabaticSlipBoundary,
-    DummyBoundary
+    DummyBoundary,
+    PrescribedViscousBoundary,
+    IsothermalNoSlipBoundary
 )
 from mirgecom.initializers import (
     Lump,
@@ -79,6 +82,7 @@ from mirgecom.initializers import (
     PlanarDiscontinuity
 )
 from mirgecom.eos import IdealSingleGas
+from mirgecom.transport import SimpleTransport
 
 from logpyle import IntervalTimer
 
@@ -168,7 +172,7 @@ def main(ctx_factory=cl.create_some_context,
     nparts = comm.Get_size()
     casename = "nozzle"
 
-    logmgr = initialize_logmgr(use_logmgr, filename="{casename}.sqlite",
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
         mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
@@ -312,7 +316,10 @@ def main(ctx_factory=cl.create_some_context,
     #timestepper = lsrk54_step
     #timestepper = lsrk144_step
     #timestepper = euler_step
-    eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2)
+    mu = 1.e-5
+    kappa = rho_bkrnd*mu/0.75
+    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
+    eos = IdealSingleGas(gamma=gamma_CO2, gas_const=R_CO2, transport_model=transport_model)
     bulk_init = PlanarDiscontinuity(dim=dim, disc_location=-.30, sigma=0.005,
                               temperature_left=temp_inflow, temperature_right=temp_bkrnd,
                               pressure_left=pres_inflow, pressure_right=pres_bkrnd,
@@ -340,7 +347,7 @@ def main(ctx_factory=cl.create_some_context,
             if p_fun is not None:
               self._p_fun = p_fun
     
-        def __call__(self, x_vec, *, t=0, eos):
+        def __call__(self, x_vec, *, t=0, eos, **kwargs):
     
     
             if self._p_fun is not None:
@@ -376,10 +383,14 @@ def main(ctx_factory=cl.create_some_context,
     outflow_init = Uniform(dim=dim, rho=rho_bkrnd, p=pres_bkrnd,
                            velocity=vel_outflow)
 
+    # for ns when it's ready with artificial viscosity
+    #inflow = PrescribedViscousBoundary(inflow_init)
+    #outflow = PrescribedViscousBoundary(outflow_init)
+    #wall = IsothermalNoSlipBoundary()
+    # for euler, note we switched back to Slip for timing, AdiabaticNoSlip is no more
     inflow = PrescribedBoundary(inflow_init)
     outflow = PrescribedBoundary(outflow_init)
     wall = AdiabaticSlipBoundary()
-    dummy = DummyBoundary()
 
 
     alpha_sc = 0.5
@@ -525,8 +536,12 @@ def main(ctx_factory=cl.create_some_context,
 
         return ( euler_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
                + av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
-               alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+                 alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
                + sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
+        #return ( ns_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
+               #+ av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
+                 #alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+               #+ sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
 
 
     def my_checkpoint(step, t, dt, state):
