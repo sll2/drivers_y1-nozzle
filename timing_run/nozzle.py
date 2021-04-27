@@ -47,6 +47,7 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
+from mirgecom.euler import euler_operator
 from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
 from mirgecom.artificial_viscosity import av_operator
@@ -70,6 +71,9 @@ from mirgecom.integrators import (
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedBoundary,
+    AdiabaticSlipBoundary,
+    DummyBoundary,
+    PrescribedViscousBoundary,
     IsothermalNoSlipBoundary
 )
 from mirgecom.initializers import (
@@ -168,7 +172,7 @@ def main(ctx_factory=cl.create_some_context,
     nparts = comm.Get_size()
     casename = "nozzle"
 
-    logmgr = initialize_logmgr(use_logmgr, filename="{casename}.sqlite",
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
         mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
@@ -343,7 +347,7 @@ def main(ctx_factory=cl.create_some_context,
             if p_fun is not None:
               self._p_fun = p_fun
     
-        def __call__(self, x_vec, *, t=0, eos):
+        def __call__(self, x_vec, *, t=0, eos, **kwargs):
     
     
             if self._p_fun is not None:
@@ -379,9 +383,14 @@ def main(ctx_factory=cl.create_some_context,
     outflow_init = Uniform(dim=dim, rho=rho_bkrnd, p=pres_bkrnd,
                            velocity=vel_outflow)
 
-    inflow = PrescribedViscousBoundary(inflow_init)
-    outflow = PrescribedViscousBoundary(outflow_init)
-    wall = IsothermalNoSlipBoundary()
+    # for ns when it's ready with artificial viscosity
+    #inflow = PrescribedViscousBoundary(inflow_init)
+    #outflow = PrescribedViscousBoundary(outflow_init)
+    #wall = IsothermalNoSlipBoundary()
+    # for euler, note we switched back to Slip for timing, AdiabaticNoSlip is no more
+    inflow = PrescribedBoundary(inflow_init)
+    outflow = PrescribedBoundary(outflow_init)
+    wall = AdiabaticSlipBoundary()
 
 
     alpha_sc = 0.5
@@ -525,10 +534,14 @@ def main(ctx_factory=cl.create_some_context,
                               viz_fields=viz_fields)
             exit()
 
-        return ( ns_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
+        return ( euler_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
                + av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
                  alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
                + sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
+        #return ( ns_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
+               #+ av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
+                 #alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+               #+ sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
 
 
     def my_checkpoint(step, t, dt, state):
