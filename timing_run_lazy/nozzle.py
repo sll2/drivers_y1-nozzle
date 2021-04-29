@@ -39,7 +39,7 @@ import math
 from pytools.obj_array import obj_array_vectorize
 import pickle
 
-from meshmode.array_context import PyOpenCLArrayContext
+from meshmode.array_context import PyOpenCLArrayContext, PytatoArrayContext
 from meshmode.dof_array import thaw, flatten, unflatten
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.eager import EagerDGDiscretization
