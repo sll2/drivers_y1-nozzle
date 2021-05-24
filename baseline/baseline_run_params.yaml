@@ -1,0 +1,8 @@
+nviz: 100
+nrestart: 100
+current_dt: 5e-8
+t_final: 5.e-6
+order:  1
+alpha_sc: 0.5
+s0_sc: -5.0
+kappa_sc: 0.5

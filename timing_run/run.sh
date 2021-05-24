@@ -1,2 +1,2 @@
 #!/bin/bash
-mpirun -n 1 python -u -O -m mpi4py nozzle.py
+mpirun -n 1 python -u -O -m mpi4py nozzle.py -i timing_run_params.yaml
