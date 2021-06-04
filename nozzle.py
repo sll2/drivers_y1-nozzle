@@ -93,7 +93,8 @@ from logpyle import IntervalTimer
 
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
-    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info)
+    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info,
+    logmgr_set_time)
 logger = logging.getLogger(__name__)
 
 
@@ -209,6 +210,8 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     alpha_sc = 0.5
     s0_sc = -5.0
     kappa_sc = 0.5
+    integrator="rk4"
+    
 
     if(user_input_file):
         #with open('run2_params.yaml') as f:
@@ -219,20 +222,59 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             input_data=None
         input_data = comm.bcast(input_data, root=0)
             #print(input_data)
-        nviz = int(input_data["nviz"])
-        nrestart = int(input_data["nrestart"])
-        current_dt = float(input_data["current_dt"])
-        t_final = float(input_data["t_final"])
-        order = int(input_data["order"])
+        try:
+            nviz = int(input_data["nviz"])
+        except KeyError:
+            pass
+        try:
+            nrestart = int(input_data["nrestart"])
+        except KeyError:
+            pass
+        try:
+            current_dt = float(input_data["current_dt"])
+        except KeyError:
+            pass
+        try:
+            t_final = float(input_data["t_final"])
+        except KeyError:
+            pass
+        try:
+            alpha_sc = float(input_data["alpha_sc"])
+        except KeyError:
+            pass
+        try:
+            kappa_sc = float(input_data["kappa_sc"])
+        except KeyError:
+            pass
+        try:
+            s0_sc = float(input_data["s0_sc"])
+        except KeyError:
+            pass
+        try:
+            order = int(input_data["order"])
+        except KeyError:
+            pass
+        try:
+            integrator = input_data["integrator"]
+        except KeyError:
+            pass
 
+    # param sanity check
+    allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
+    if(integrator not in allowed_integrators):
+        error_message = "Invalid time integrator: {}".format(integrator)
+        raise RuntimeError(error_message)
+        
     if(rank == 0):
-        print(f'Simluation control data:')
+        print(f'#### Simluation control data: ####')
         print(f'\tnviz = {nviz}')
         print(f'\tnrestart = {nrestart}')
         print(f'\tcurrent_dt = {current_dt}')
         print(f'\tt_final = {t_final}')
         print(f'\torder = {order}')
-        print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
+        print(f"\tShock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
+        print(f"\tTime integration {integrator}")
+        print(f'#### Simluation control data: ####')
 
     dim = 3
     exittol = .09
@@ -330,10 +372,14 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
     # starting pressure for the inflow ramp
 
-    timestepper = rk4_step
-    #timestepper = lsrk54_step
-    #timestepper = lsrk144_step
-    #timestepper = euler_step
+    allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
+    timestepper=rk4_step
+    if integrator == "euler":
+        timestepper = euler_step
+    if integrator == "lsrk54":
+        timestepper = lsrk54_step
+    if integrator == "lsrk144":
+        timestepper = lsrk144_step
     mu = 1.e-5
     kappa = rho_bkrnd*mu/0.75
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
@@ -484,6 +530,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_many_discretization_quantities(logmgr, discr, dim,
             extract_vars_for_logging, units_for_logging)
+        logmgr_set_time(logmgr, current_step, current_t)
         #logmgr_add_package_versions(logmgr)
 
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_log.max",
