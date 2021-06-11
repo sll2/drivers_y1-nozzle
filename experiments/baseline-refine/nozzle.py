@@ -44,6 +44,7 @@ import pickle
 from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import thaw, flatten, unflatten
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+from meshmode.mesh.refinement import RefinerWithoutAdjacency
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -170,7 +171,8 @@ def get_pseudo_y0_mesh():
 def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file="",
          snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl", 
          restart_step=None, restart_name=None,
-         use_profiling=False, use_logmgr=False, use_lazy_eval=False):
+         use_profiling=False, use_logmgr=False, use_lazy_eval=False,
+         generate_mesh_restart=False):
     """Drive the Y0 nozzle example."""
 
     from mpi4py import MPI
@@ -286,6 +288,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     current_t = 0
     constant_cfl = False
     nstatus = 10000000000
+    #nstatus = 1
     rank = 0
     checkpoint_t = current_t
     current_step = 0
@@ -484,9 +487,76 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
-        global_nelements = restart_data["global_nelements"]
+        _global_nelements = restart_data["global_nelements"]
+        restart_order = int(restart_data["order"])
+        if rank == 0:
+            print(f"Restart data is order {restart_order}")
 
         assert comm.Get_size() == restart_data["num_parts"]
+
+    def refinement_function(vert):
+        csum = 0
+        for i in vert:
+            csum += i
+            #print csum
+        return csum
+
+    def get_function_flags(mesh, function):
+        from math import sqrt
+        flags = np.zeros(len(mesh.groups[0].vertex_indices))
+        for grp in mesh.groups:
+            for iel_grp in range(grp.nelements):
+                vertex_indices = grp.vertex_indices[iel_grp]
+                max_edge_len = 0
+                for i in range(len(vertex_indices)):
+                    for j in range(i+1, len(vertex_indices)):
+                        edge_len = 0
+                        for k in range(len(mesh.vertices)):
+                            edge_len += (
+                                    (mesh.vertices[k, vertex_indices[i]]
+                                        - mesh.vertices[k, vertex_indices[j]])
+                                    * (mesh.vertices[k, vertex_indices[i]]
+                                        - mesh.vertices[k, vertex_indices[j]]))
+                        edge_len = sqrt(edge_len)
+                        max_edge_len = max(max_edge_len, edge_len)
+                    #print(edge_lens[0], mesh.vertices[0, vertex_indices[i]], mesh.vertices[1, vertex_indices[i]], mesh.vertices[2, vertex_indices[i]])  # noqa
+                    centroid = [0] * len(mesh.vertices)
+                    for j in range(len(mesh.vertices)):
+                        centroid[j] += mesh.vertices[j, vertex_indices[i]]
+                for i in range(len(mesh.vertices)):
+                    centroid[i] /= len(vertex_indices)
+                val = function(centroid)
+                if max_edge_len > val:
+                    flags[iel_grp] = True
+        return flags
+       
+    
+    mesh_refinement = True
+    if mesh_refinement:
+        print("Mesh refinement enabled")
+        refiner = RefinerWithoutAdjacency(local_mesh)
+        num_elements = []
+        refinement_time = []
+        while True:
+            print("NELS:", local_mesh.nelements)
+            #flags = get_corner_flags(mesh)
+            flags = get_function_flags(local_mesh, refinement_function)
+            nels = 0
+            for i in flags:
+                if i:
+                    nels += 1
+            if nels == 0:
+                break
+            print("LKJASLFKJALKASF:", nels)
+            num_elements.append(nels)
+            #flags = get_corner_flags(mesh)
+            #beg = clock()
+            mesh = refiner.refine(flags)
+            #end = clock()
+            #time_taken = end - beg
+            #refinement_time.append(time_taken)
+
+        print("Done refinement")
 
     if rank == 0:
         logging.info("Making discretization")
@@ -513,17 +583,26 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     if restart_step is None:
         if rank == 0:
             logging.info("Initializing soln.")
-        # for Discontinuity initial conditions
         current_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
-        # for uniform background initial condition
-        #current_state = bulk_init(nodes, eos=eos)
     else:
         current_t = restart_data["t"]
         current_step = restart_step
 
-        current_state = unflatten(
-            actx, discr.discr_from_dd("vol"),
-            obj_array_vectorize(actx.from_numpy, restart_data["state"]))
+        if restart_order != order:
+            restart_discr = EagerDGDiscretization(actx, local_mesh, order=restart_order,
+                                                  mpi_communicator=comm)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            connection = make_same_mesh_connection(actx, discr.discr_from_dd("vol"),
+                                                   restart_discr.discr_from_dd("vol"))
+
+            restart_state = unflatten(
+                actx, restart_discr.discr_from_dd("vol"),
+                obj_array_vectorize(actx.from_numpy, restart_data["state"]))
+            current_state = connection(restart_state)
+        else:
+            current_state = unflatten(
+                actx, discr.discr_from_dd("vol"),
+                obj_array_vectorize(actx.from_numpy, restart_data["state"]))
 
     vis_timer = None
 
@@ -561,6 +640,10 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                             ("t_step.max", "------- step walltime: {value:6g} s, "),
                             ("t_log.max", "log walltime: {value:6g} s")
                            ])
+
+        #logmgr.add_watches([("step.max", "step={value} "),
+            #("t_step.min", "\nt_step({value:g},"), ("t_step.max", " {value:g})\n"),
+            #"t_sim.max", "fifteen", "t_vis.max"])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
@@ -650,6 +733,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                 pickle.dump({
                     "local_mesh": local_mesh,
                     "state": obj_array_vectorize(actx.to_numpy, flatten(state)),
+                    "order": order,
                     "t": t,
                     "step": step,
                     "global_nelements": global_nelements,
@@ -658,6 +742,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
         cv = split_conserved(dim, state)
         tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc, kappa=kappa_sc)
+
         local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, q=state)
         from grudge.op import nodal_max
         max_cfl = nodal_max(discr, "vol", local_cfl)
@@ -665,8 +750,9 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         viz_fields = [("sponge_sigma", gen_sponge()), 
                       ("tagged cells", tagged_cells), 
                       ("cfl", local_cfl)]
+
         return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              q=state, vizname=viz_path+casename,
+                              q=state, cfl=max_cfl, vizname=viz_path+casename,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
@@ -716,6 +802,8 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--casename',  type=ascii,
                         dest='casename', nargs='?', action='store',
                         help='simulation case name')
+    parser.add_argument("--generate_mesh_restart", action="store_true", default=False,
+        help="generate (new) mesh on restart [OFF]")
     parser.add_argument("--profile", action="store_true", default=False,
         help="enable kernel profiling [OFF]")
     parser.add_argument("--log", action="store_true", default=True,
@@ -748,11 +836,13 @@ if __name__ == "__main__":
         input_file = (args.input_file).replace("'","")
         print(f"Reading user input from {args.input_file}")
     else:
+        input_file=""
         print("No user input file, using default values")
 
     print(f"Running {sys.argv[0]}\n")
     main(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
          snapshot_pattern=snapshot_pattern,
-         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
+         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log,
+         generate_mesh_restart=args.generate_mesh_restart)
 
 # vim: foldmethod=marker
