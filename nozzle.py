@@ -52,7 +52,7 @@ from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.euler import euler_operator
 from mirgecom.navierstokes import ns_operator
-from mirgecom.fluid import split_conserved
+from mirgecom.fluid import make_conserved
 from mirgecom.artificial_viscosity import (
     av_operator,
     smoothness_indicator
@@ -167,7 +167,7 @@ def get_pseudo_y0_mesh():
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file="",
+def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=None,
          snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl", 
          restart_step=None, restart_name=None,
          use_profiling=False, use_logmgr=False, use_lazy_eval=False):
@@ -214,7 +214,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     integrator="rk4"
     
 
-    if(user_input_file):
+    if user_input_file:
         #with open('run2_params.yaml') as f:
         if rank ==0:
             with open(user_input_file) as f:
@@ -286,7 +286,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     current_t = 0
     constant_cfl = False
     nstatus = 10000000000
-    rank = 0
     checkpoint_t = current_t
     current_step = 0
 
@@ -349,7 +348,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
       temperature=(1.+(gamma-1.)*0.5*math.pow(mach,2))
       temperature=T0*math.pow(temperature,-1.0)
       return temperature
-
 
     inlet_mach = getMachFromAreaRatio(area_ratio = inletAreaRatio, gamma=gamma_CO2, mach_guess = 0.01);
     # ramp the stagnation pressure
@@ -439,8 +437,8 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
             energy = (pressure/(gamma - 1.0)) + np.dot(mom, mom)/(2.0*mass)
-            from mirgecom.fluid import join_conserved
-            return join_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy)
+            from mirgecom.fluid import make_conserved
+            return make_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy)
 
 
     inflow_init = IsentropicInflow(dim=dim, T0=298, P0=start_ramp_pres, 
@@ -453,20 +451,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     inflow = PrescribedInviscidBoundary(fluid_solution_func=inflow_init)
     outflow = PrescribedInviscidBoundary(fluid_solution_func=outflow_init)
     wall = IsothermalNoSlipBoundary()
-
-
-    # timestep estimate
-    #wave_speed = max(mach2*c_bkrnd,c_shkd+velocity2[0])
-    #char_len = 0.001
-    #area=char_len*char_len/2
-    #perimeter = 2*char_len+math.sqrt(2*char_len*char_len)
-    #h = 2*area/perimeter
-
-    #dt_est = 1/(wave_speed*order*order/h)
-    #print(f"Time step estimate {dt_est}\n")
-#
-    #dt_est_visc = 1/(wave_speed*order*order/h+alpha_sc*order*order*order*order/h/h)
-    #print(f"Viscous timestep estimate {dt_est_visc}\n")
 
     boundaries = {
         DTAG_BOUNDARY("Inflow"): inflow,
@@ -527,7 +511,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
     vis_timer = None
 
-    local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, q=current_state)
+    local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, cv=current_state)
     from grudge.op import nodal_max
     cfl = nodal_max(discr, "vol", local_cfl)
 
@@ -554,8 +538,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                             ("cfl.max", "cfl = {value:1.4f}\n"), 
                             ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
                             ("max_pressure",    "{value:1.9e})\n"),
-                            #("min_temperature", "------- T (min, max) (K)  = ({value:1.9e}, "),
-                            #("max_temperature",    "{value:1.9e})\n"),
                             ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
                             ("max_temperature",    "{value:7g})\n"),
                             ("t_step.max", "------- step walltime: {value:6g} s, "),
@@ -573,8 +555,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    #visualizer = make_visualizer(discr, order + 3
-                                 #if discr.dim == 2 else order)
     visualizer = make_visualizer(discr)
 
     initname = "pseudoY0"
@@ -596,42 +576,19 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                            t_final=t_final, constant_cfl=constant_cfl)
 
     
-    def sponge(q, q_ref, sigma):
-        return(sigma*(q_ref-q))
+    def sponge(cv, cv_ref, sigma):
+        return(sigma*(cv_ref-cv))
 
     def my_rhs(t, state):
-
-        # check for some troublesome output types
-        inf_exists = not np.isfinite(discr.norm(state, np.inf))
-        if inf_exists:
-            if rank == 0:
-                logging.info("Non-finite values detected in simulation, exiting...")
-            # dump right now
-            cv = split_conserved(dim, state)
-            tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc, kappa=kappa_sc)
-            viz_fields = [("sponge_sigma", gen_sponge()),("tagged cells", tagged_cells)]
-            sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              q=state, vizname=casename,
-                              step=999999999, t=t, dt=current_dt,
-                              nviz=1, exittol=exittol,
-                              constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True, viz_fields=viz_fields)
-            exit()
-
-        #return ( euler_operator(discr, q=state, t=t,boundaries=boundaries, eos=eos)
-               #+ av_operator(discr,t=t, q=state, eos=eos, boundaries=boundaries,
-                 #alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
-               #+ sponge(q=state, q_ref=ref_state, sigma=sponge_sigma))
         return ( 
-            ns_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos) +
-            av_operator(
-                discr, q=state, boundaries=boundaries,
+            ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos) +
+            make_conserved(dim, q=av_operator(
+                discr, q=state.join(), boundaries=boundaries,
                 boundary_kwargs={"time": t, "eos":eos},
-                alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc
-            ) +
-            sponge(q=state, q_ref=ref_state, sigma=sponge_sigma)
+                alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+            ) + 
+            sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma)
         )
-
 
     restart_path='restart_data/'
     viz_path='viz_data/'
@@ -649,16 +606,15 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             with open(restart_path+snapshot_pattern.format(casename=casename, step=step, rank=rank), "wb") as f:
                 pickle.dump({
                     "local_mesh": local_mesh,
-                    "state": obj_array_vectorize(actx.to_numpy, flatten(state)),
+                    "state": obj_array_vectorize(actx.to_numpy, flatten(state.join())),
                     "t": t,
                     "step": step,
                     "global_nelements": global_nelements,
                     "num_parts": nparts,
                     }, f)
 
-        cv = split_conserved(dim, state)
-        tagged_cells = smoothness_indicator(discr, cv.mass, s0=s0_sc, kappa=kappa_sc)
-        local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, q=state)
+        tagged_cells = smoothness_indicator(discr, state.mass, s0=s0_sc, kappa=kappa_sc)
+        local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, cv=state)
         from grudge.op import nodal_max
         max_cfl = nodal_max(discr, "vol", local_cfl)
 
@@ -666,7 +622,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                       ("tagged cells", tagged_cells), 
                       ("cfl", local_cfl)]
         return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              q=state, vizname=viz_path+casename,
+                              cv=state, vizname=viz_path+casename,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
@@ -744,6 +700,7 @@ if __name__ == "__main__":
         print(f"step {restart_step}")
         print(f"name {restart_name}") 
 
+    input_file=None
     if(args.input_file):
         input_file = (args.input_file).replace("'","")
         print(f"Reading user input from {args.input_file}")

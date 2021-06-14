@@ -6,3 +6,4 @@ order:  1
 alpha_sc: 0.5
 s0_sc: -5.0
 kappa_sc: 0.5
+integrator: rk4
