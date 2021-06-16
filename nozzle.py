@@ -60,9 +60,13 @@ from mirgecom.artificial_viscosity import (
 from mirgecom.inviscid import get_inviscid_cfl
 from mirgecom.simutil import (
     inviscid_sim_timestep,
-    sim_checkpoint,
     check_step,
-    generate_and_distribute_mesh
+    generate_and_distribute_mesh,
+    write_restart_file,
+    write_visfile,
+    check_range_local,
+    check_naninf_local, 
+    check_range_local
 )
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
@@ -205,6 +209,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     # default input values that will be (potentially) read from input
     nviz = 100
     nrestart = 100
+    nhealth = 100
     current_dt = 5e-8
     t_final = 5.e-6
     order = 1
@@ -212,7 +217,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     s0_sc = -5.0
     kappa_sc = 0.5
     integrator="rk4"
-    
 
     if user_input_file:
         #with open('run2_params.yaml') as f:
@@ -229,6 +233,10 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             pass
         try:
             nrestart = int(input_data["nrestart"])
+        except KeyError:
+            pass
+        try:
+            nhealth = int(input_data["nhealth"])
         except KeyError:
             pass
         try:
@@ -357,19 +365,16 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     pres_inflow = getIsentropicPressure(mach=inlet_mach, P0=start_ramp_pres, gamma=gamma_CO2)
     temp_inflow = getIsentropicTemperature(mach=inlet_mach, T0=298, gamma=gamma_CO2)
     rho_inflow = pres_inflow/temp_inflow/R_CO2
-
-    print(f'inlet Mach number {inlet_mach}')
-    print(f'inlet temperature {temp_inflow}')
-    print(f'inlet pressure {pres_inflow}')
-
     end_ramp_pres = 150000
     pres_inflow_final = getIsentropicPressure(mach=inlet_mach, P0=end_ramp_pres, gamma=gamma_CO2)
-
-    print(f'final inlet pressure {pres_inflow_final}')
-
     vel_inflow[0] = inlet_mach*math.sqrt(gamma_CO2*pres_inflow/rho_inflow)
 
-    # starting pressure for the inflow ramp
+    if rank == 0:
+        print(f'inlet Mach number {inlet_mach}')
+        print(f'inlet temperature {temp_inflow}')
+        print(f'inlet pressure {pres_inflow}')
+        print(f'final inlet pressure {pres_inflow_final}')
+
 
     allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
     timestepper=rk4_step
@@ -437,7 +442,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
             energy = (pressure/(gamma - 1.0)) + np.dot(mom, mom)/(2.0*mass)
-            from mirgecom.fluid import make_conserved
             return make_conserved(dim=self._dim, mass=mass, momentum=mom, energy=energy)
 
 
@@ -463,8 +467,11 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        with open('restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank), "rb") as f:
-            restart_data = pickle.load(f)
+        #with open('restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank), "rb") as f:
+            #restart_data = pickle.load(f)
+        from mirgecom.simutil import read_restart_data
+        restart_file = 'restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
+        restart_data = read_restart_data(restart_file)
 
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
@@ -505,9 +512,8 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         current_t = restart_data["t"]
         current_step = restart_step
 
-        current_state = unflatten(
-            actx, discr.discr_from_dd("vol"),
-            obj_array_vectorize(actx.from_numpy, restart_data["state"]))
+        from mirgecom.simutil import make_fluid_restart_state
+        current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
 
     vis_timer = None
 
@@ -598,35 +604,61 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         if not os.path.exists(viz_path):
             os.makedirs(viz_path)  
 
-    def my_checkpoint(step, t, dt, state):
+    def my_checkpoint(step, t, dt, state, force=False):
 
-        write_restart = (check_step(step, nrestart)
-                         if step != restart_step else False)
-        if write_restart is True:
-            with open(restart_path+snapshot_pattern.format(casename=casename, step=step, rank=rank), "wb") as f:
-                pickle.dump({
-                    "local_mesh": local_mesh,
-                    "state": obj_array_vectorize(actx.to_numpy, flatten(state.join())),
-                    "t": t,
-                    "step": step,
-                    "global_nelements": global_nelements,
-                    "num_parts": nparts,
-                    }, f)
+        do_health = force or check_step(step, nhealth) and step > 0
+        do_viz = force or check_step(step, nviz)
+        do_restart = force or check_step(step, nrestart)
 
-        tagged_cells = smoothness_indicator(discr, state.mass, s0=s0_sc, kappa=kappa_sc)
-        local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, cv=state)
-        from grudge.op import nodal_max
-        max_cfl = nodal_max(discr, "vol", local_cfl)
+        if do_viz or do_health:
+            dv = eos.dependent_vars(state)
 
-        viz_fields = [("sponge_sigma", gen_sponge()), 
-                      ("tagged cells", tagged_cells), 
-                      ("cfl", local_cfl)]
-        return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              cv=state, vizname=viz_path+casename,
-                              step=step, t=t, dt=dt, nstatus=nstatus,
-                              nviz=nviz, exittol=exittol,
-                              constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True, viz_fields=viz_fields)
+        errors = False
+        if do_health:
+            health_message = ""
+            if check_naninf_local(discr, "vol", dv.pressure):
+                errors = True
+                health_message += "Invalid pressure data found.\n"
+            elif check_range_local(discr, "vol", dv.pressure, min_value=1, max_value=2.e6):
+                errors = True
+                health_message += "Pressure data failed health check.\n"
+
+        errors = comm.allreduce(errors, MPI.LOR)
+        if errors:
+          if rank == 0:
+              logger.info("Fluid solution failed health check.")
+          if health_message:
+              logger.info(f"{rank=}:  {health_message}")
+
+        #if check_step(step, nrestart) and step != restart_step and not errors:
+        if do_restart or errors:
+            filename = snapshot_pattern.format(step=step, rank=rank, casename=casename)
+            restart_dictionary = {
+                "local_mesh": local_mesh,
+                "order": order,
+                "state": state,
+                "t": t,
+                "step": step,
+            }
+            write_restart_file(actx, restart_dictionary, filename)
+
+        #if ((check_step(step, nviz) and step != restart_step) or errors):
+        if do_viz or errors:
+            local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
+            tagged_cells = smoothness_indicator(discr, state.mass, s0=s0_sc,
+                                                kappa=kappa_sc)
+            viz_fields = [
+                ("cv", state), 
+                ("dv", eos.dependent_vars(state)),
+                ("sponge_sigma", gen_sponge()), 
+                ("tagged_cells", tagged_cells),
+                ("cfl", local_cfl)
+            ]
+            write_visfile(discr, viz_fields, visualizer, vizname=casename,
+                          step=step, t=t, overwrite=True, vis_timer=vis_timer)
+
+        if errors:
+            raise RuntimeError("Error detected by user checkpoint, exiting.")
 
     if rank == 0:
         logging.info("Stepping.")
@@ -638,15 +670,13 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                       t_final=t_final, t=current_t, istep=current_step,
                       logmgr=logmgr,eos=eos,dim=dim)
 
-    if rank == 0:
-        logger.info("Checkpointing final state ...")
 
-    my_checkpoint(current_step, t=current_t,
-                  dt=(current_t - checkpoint_t),
-                  state=current_state)
-
-    if current_t - t_final < 0:
-        raise ValueError("Simulation exited abnormally")
+    if not check_step(current_step, nviz):
+        if rank == 0:
+            logger.info("Checkpointing final state ...")
+        my_checkpoint(current_step, t=current_t,
+                      dt=(current_t - checkpoint_t),
+                      state=current_state, force=True)
 
     if logmgr:
         logmgr.close()
