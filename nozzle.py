@@ -47,6 +47,7 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
+from grudge.op import nodal_max
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
@@ -99,7 +100,7 @@ from logpyle import IntervalTimer, LogQuantity
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
     logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info,
-    logmgr_set_time)
+    logmgr_set_time, LogUserQuantity)
 logger = logging.getLogger(__name__)
 
 
@@ -179,7 +180,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
-    rank = 0
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
@@ -206,10 +206,11 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             actx = PyOpenCLArrayContext(queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
-    # default input values that will be (potentially) read from input
+    # default input values that will be read from input (if they exist)
     nviz = 100
     nrestart = 100
     nhealth = 100
+    nstatus = 1
     current_dt = 5e-8
     t_final = 5.e-6
     order = 1
@@ -219,7 +220,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     integrator="rk4"
 
     if user_input_file:
-        #with open('run2_params.yaml') as f:
         if rank ==0:
             with open(user_input_file) as f:
                 input_data = yaml.load(f, Loader=yaml.FullLoader)
@@ -237,6 +237,10 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             pass
         try:
             nhealth = int(input_data["nhealth"])
+        except KeyError:
+            pass
+        try:
+            nstatus = int(input_data["nstatus"])
         except KeyError:
             pass
         try:
@@ -278,6 +282,8 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         print(f'#### Simluation control data: ####')
         print(f'\tnviz = {nviz}')
         print(f'\tnrestart = {nrestart}')
+        print(f'\tnhealth = {nhealth}')
+        print(f'\tnstatus = {nstatus}')
         print(f'\tcurrent_dt = {current_dt}')
         print(f'\tt_final = {t_final}')
         print(f'\torder = {order}')
@@ -293,7 +299,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     vel_outflow = np.zeros(shape=(dim,))
     current_t = 0
     constant_cfl = False
-    nstatus = 10000000000
     checkpoint_t = current_t
     current_step = 0
 
@@ -430,12 +435,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             temperature = getIsentropicTemperature(mach=self._mach, T0=T0, gamma=gamma)
             rho = pressure/temperature/gas_const
 
-            #print(f'ramp Mach number {self._mach}')
-            #print(f'ramp stagnation pressure {P0}')
-            #print(f'ramp stagnation temperature {T0}')
-            #print(f'ramp pressure {pressure}')
-            #print(f'ramp temperature {temperature}')
-
             velocity = np.zeros(shape=(self._dim,)) 
             velocity[self._direc] = self._mach*math.sqrt(gamma*pressure/rho)
     
@@ -467,8 +466,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        #with open('restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank), "rb") as f:
-            #restart_data = pickle.load(f)
         from mirgecom.simutil import read_restart_data
         restart_file = 'restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
         restart_data = read_restart_data(restart_file)
@@ -516,27 +513,14 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
 
     vis_timer = None
-
-    local_cfl = get_inviscid_cfl(discr, eos=eos, dt=current_dt, cv=current_state)
-    from grudge.op import nodal_max
-    cfl = nodal_max(discr, "vol", local_cfl)
-
-    class Log_CFL(LogQuantity):
-        @property
-        def default_aggregator(self):
-            return min
-
-        def __call__(self):
-            return cfl
+    log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_many_discretization_quantities(logmgr, discr, dim,
             extract_vars_for_logging, units_for_logging)
         logmgr_set_time(logmgr, current_step, current_t)
-        #logmgr_add_package_versions(logmgr)
-
-        logmgr.add_quantity(Log_CFL("cfl"))
+        logmgr.add_quantity(log_cfl, interval=nstatus)
 
         logmgr.add_watches([
                             ("step.max", "step = {value}, "), 
@@ -605,10 +589,10 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             os.makedirs(viz_path)  
 
     def my_checkpoint(step, t, dt, state, force=False):
-
         do_health = force or check_step(step, nhealth) and step > 0
         do_viz = force or check_step(step, nviz)
         do_restart = force or check_step(step, nrestart)
+        do_status = force or check_step(step, nstatus)
 
         if do_viz or do_health:
             dv = eos.dependent_vars(state)
@@ -642,9 +626,13 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             }
             write_restart_file(actx, restart_dictionary, filename)
 
+        if do_status or do_viz or errors:
+            local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
+            max_cfl = nodal_max(discr, "vol", local_cfl)
+            log_cfl.set_quantity(max_cfl)
+
         #if ((check_step(step, nviz) and step != restart_step) or errors):
         if do_viz or errors:
-            local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
             tagged_cells = smoothness_indicator(discr, state.mass, s0=s0_sc,
                                                 kappa=kappa_sc)
             viz_fields = [
