@@ -63,11 +63,13 @@ from mirgecom.simutil import (
     inviscid_sim_timestep,
     check_step,
     generate_and_distribute_mesh,
-    write_restart_file,
     write_visfile,
     check_range_local,
     check_naninf_local, 
     check_range_local
+)
+from mirgecom.restart import (
+    write_restart_file
 )
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
@@ -291,6 +293,9 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         print(f"\tTime integration {integrator}")
         print(f'#### Simluation control data: ####')
 
+    restart_path='restart_data/'
+    viz_path='viz_data/'
+
     dim = 3
     exittol = .09
     current_cfl = 1.0
@@ -508,9 +513,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     else:
         current_t = restart_data["t"]
         current_step = restart_step
-
-        from mirgecom.simutil import make_fluid_restart_state
-        current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
+        current_state = restart_data["state"]
 
     vis_timer = None
     log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
@@ -580,13 +583,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
             sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma)
         )
 
-    restart_path='restart_data/'
-    viz_path='viz_data/'
-    if(rank == 0):
-        if not os.path.exists(restart_path):
-            os.makedirs(restart_path)  
-        if not os.path.exists(viz_path):
-            os.makedirs(viz_path)  
 
     def my_checkpoint(step, t, dt, state, force=False):
         do_health = force or check_step(step, nhealth) and step > 0
@@ -616,15 +612,17 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
         #if check_step(step, nrestart) and step != restart_step and not errors:
         if do_restart or errors:
-            filename = snapshot_pattern.format(step=step, rank=rank, casename=casename)
+            filename = restart_path+snapshot_pattern.format(step=step, rank=rank, casename=casename)
             restart_dictionary = {
                 "local_mesh": local_mesh,
                 "order": order,
                 "state": state,
                 "t": t,
                 "step": step,
+                "global_nelements": global_nelements,
+                "num_parts": nparts
             }
-            write_restart_file(actx, restart_dictionary, filename)
+            write_restart_file(actx, restart_dictionary, filename, comm)
 
         if do_status or do_viz or errors:
             local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
@@ -642,7 +640,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                 ("tagged_cells", tagged_cells),
                 ("cfl", local_cfl)
             ]
-            write_visfile(discr, viz_fields, visualizer, vizname=casename,
+            write_visfile(discr, viz_fields, visualizer, vizname=viz_path+casename,
                           step=step, t=t, overwrite=True, vis_timer=vis_timer)
 
         if errors:
@@ -659,12 +657,11 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
                       logmgr=logmgr,eos=eos,dim=dim)
 
 
-    if not check_step(current_step, nviz):
-        if rank == 0:
-            logger.info("Checkpointing final state ...")
-        my_checkpoint(current_step, t=current_t,
-                      dt=(current_t - checkpoint_t),
-                      state=current_state, force=True)
+    if rank == 0:
+        logger.info("Checkpointing final state ...")
+    my_checkpoint(current_step, t=current_t,
+                  dt=(current_t - checkpoint_t),
+                  state=current_state, force=True)
 
     if logmgr:
         logmgr.close()
