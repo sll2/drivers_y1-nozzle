@@ -473,7 +473,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     else:  # Restart
         from mirgecom.simutil import read_restart_data
         restart_file = 'restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
-        restart_data = read_restart_data(restart_file)
+        restart_data = read_restart_data(actx, restart_file)
 
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
@@ -645,6 +645,8 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
         if errors:
             raise RuntimeError("Error detected by user checkpoint, exiting.")
+
+        return dt
 
     if rank == 0:
         logging.info("Stepping.")
