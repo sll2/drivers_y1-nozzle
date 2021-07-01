@@ -506,6 +506,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         flags = np.zeros(len(mesh.groups[0].vertex_indices))
         for grp in mesh.groups:
             for iel_grp in range(grp.nelements):
+                print(f"element {iel_grp}")
                 vertex_indices = grp.vertex_indices[iel_grp]
                 max_edge_len = 0
                 for i in range(len(vertex_indices)):
