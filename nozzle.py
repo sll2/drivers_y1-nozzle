@@ -277,6 +277,14 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
     if(integrator not in allowed_integrators):
         error_message = "Invalid time integrator: {}".format(integrator)
         raise RuntimeError(error_message)
+
+    timestepper=rk4_step
+    if integrator == "euler":
+        timestepper = euler_step
+    if integrator == "lsrk54":
+        timestepper = lsrk54_step
+    if integrator == "lsrk144":
+        timestepper = lsrk144_step
         
     if(rank == 0):
         print(f'#### Simluation control data: ####')
@@ -381,14 +389,6 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         print(f'final inlet pressure {pres_inflow_final}')
 
 
-    allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
-    timestepper=rk4_step
-    if integrator == "euler":
-        timestepper = euler_step
-    if integrator == "lsrk54":
-        timestepper = lsrk54_step
-    if integrator == "lsrk144":
-        timestepper = lsrk144_step
     mu = 1.e-5
     kappa = rho_bkrnd*mu/0.75
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa)
@@ -478,9 +478,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
     if rank == 0:
         logging.info("Making discretization")
-    discr = EagerDGDiscretization(
-        actx, local_mesh, order=order, mpi_communicator=comm
-    )
+    discr = EagerDGDiscretization( actx, local_mesh, order=order, mpi_communicator=comm)
     nodes = thaw(actx, discr.nodes())
 
     # initialize the sponge field
