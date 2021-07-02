@@ -442,7 +442,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
 
             velocity = np.zeros(shape=(self._dim,)) 
             velocity[self._direc] = self._mach*math.sqrt(gamma*pressure/rho)
-    
+
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
             energy = (pressure/(gamma - 1.0)) + np.dot(mom, mom)/(2.0*mass)
