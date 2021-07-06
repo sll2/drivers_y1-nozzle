@@ -471,7 +471,7 @@ def main(ctx_factory=cl.create_some_context, casename="nozzle", user_input_file=
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        from mirgecom.simutil import read_restart_data
+        from mirgecom.restart import read_restart_data
         restart_file = 'restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
         restart_data = read_restart_data(actx, restart_file)
 

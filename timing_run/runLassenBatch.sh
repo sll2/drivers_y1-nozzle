@@ -4,8 +4,8 @@
 #BSUB -W 720
 #BSUB -J mirge_Y0
 #BSUB -q pbatch
-#BSUB -o runOutput.%J
-#BSUB -e runError.%J
+#BSUB -e runOutput.txt
+#BSUB -o runOutput.txt
 
 module load gcc/7.3.1
 module load spectrum-mpi
@@ -16,4 +16,8 @@ export PYOPENCL_CTX="port:tesla"
 jsrun_cmd="jsrun -g 1 -a 1 -n 1"
 export XDG_CACHE_HOME="/tmp/$USER/xdg-scratch"
 $jsrun_cmd js_task_info
-$jsrun_cmd python -u -m mpi4py ./nozzle.py -i timing_run_params.yaml
+# file for stdout
+outputFile=`$HOME/bin/getProgOutName.sh mirge`
+echo "Writing output to ${outputFile}"
+
+$jsrun_cmd python -u -O -m mpi4py ./nozzle.py -i timing_run_params.yaml > ${outputFile}
