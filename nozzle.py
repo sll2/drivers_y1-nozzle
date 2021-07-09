@@ -99,7 +99,6 @@ def get_pseudo_y0_mesh():
     """
     from meshmode.mesh.io import (read_gmsh, generate_gmsh,
                                   ScriptWithFilesSource)
-    import os
     if os.path.exists("data/pseudoY1nozzle.msh") is False:
         mesh = generate_gmsh(ScriptWithFilesSource(
             """
@@ -151,21 +150,18 @@ def get_pseudo_y0_mesh():
 def main(ctx_factory=cl.create_some_context,
          casename="nozzle",
          user_input_file=None,
-         snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl",
-         restart_step=None,
-         restart_name=None,
+         restart_file=None,
          use_profiling=False,
          use_logmgr=False,
          use_lazy_eval=False):
     """Drive the Y0 nozzle example."""
 
+    snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
+
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     nparts = comm.Get_size()
-
-    if restart_name is None:
-        restart_name = casename
 
     logmgr = initialize_logmgr(use_logmgr,
                                filename=(f"{casename}.sqlite"),
@@ -474,8 +470,6 @@ def main(ctx_factory=cl.create_some_context,
         velocity=vel_outflow
     )
 
-    #inflow = PrescribedViscousBoundary(q_func=inflow_init)
-    #outflow = PrescribedViscousBoundary(q_func=outflow_init)
     inflow = PrescribedInviscidBoundary(fluid_solution_func=inflow_init)
     outflow = PrescribedInviscidBoundary(fluid_solution_func=outflow_init)
     wall = IsothermalNoSlipBoundary()
@@ -486,7 +480,8 @@ def main(ctx_factory=cl.create_some_context,
         DTAG_BOUNDARY("Wall"): wall
     }
 
-    if restart_step is None:
+    snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
+    if restart_file is None:
         local_mesh, global_nelements = generate_and_distribute_mesh(
             comm,
             get_pseudo_y0_mesh
@@ -494,16 +489,13 @@ def main(ctx_factory=cl.create_some_context,
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-
         from mirgecom.restart import read_restart_data
-        restart_file = "restart_data/"+snapshot_pattern.format(casename=restart_name,
-                                                               step=restart_step,
-                                                               rank=rank)
         restart_data = read_restart_data(actx, restart_file)
-
+        restart_step = restart_data["step"]
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
         global_nelements = restart_data["global_nelements"]
+        restart_order = int(restart_data["order"])
 
         assert comm.Get_size() == restart_data["num_parts"]
 
@@ -531,7 +523,7 @@ def main(ctx_factory=cl.create_some_context,
     sponge_sigma = gen_sponge()
     ref_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
 
-    if restart_step is None:
+    if restart_file is None:
         if rank == 0:
             logging.info("Initializing soln.")
         # for Discontinuity initial conditions
@@ -541,7 +533,23 @@ def main(ctx_factory=cl.create_some_context,
     else:
         current_t = restart_data["t"]
         current_step = restart_step
-        current_state = restart_data["state"]
+
+        if restart_order != order:
+            restart_discr = EagerDGDiscretization(
+                actx,
+                local_mesh,
+                order=restart_order,
+                mpi_communicator=comm)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            connection = make_same_mesh_connection(
+                actx,
+                discr.discr_from_dd("vol"),
+                restart_discr.discr_from_dd("vol"))
+
+            restart_state = restart_data["state"]
+            current_state = connection(restart_state)
+        else:
+            current_state = restart_data["state"]
 
     vis_timer = None
     log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
@@ -628,8 +636,15 @@ def main(ctx_factory=cl.create_some_context,
     def my_checkpoint(step, t, dt, state, force=False):
         do_health = force or check_step(step, nhealth) and step > 0
         do_viz = force or check_step(step, nviz)
-        do_restart = force or check_step(step, nrestart)
         do_status = force or check_step(step, nstatus)
+        do_restart = force or check_step(step, nrestart)
+
+        # do not overwrite a restart file on the first step
+        if step == restart_step:
+            filename = restart_path + snapshot_pattern.format(
+                step=step, rank=rank, casename=casename)
+            if restart_file == filename:
+                do_restart = False
 
         if do_viz or do_health:
             dv = eos.dependent_vars(state)
@@ -643,7 +658,7 @@ def main(ctx_factory=cl.create_some_context,
             elif check_range_local(discr,
                                    "vol",
                                    dv.pressure,
-                                   min_value=1,
+                                   min_value=0.1,
                                    max_value=2.0e6):
                 errors = True
                 health_message += "Pressure data failed health check.\n"
@@ -655,7 +670,6 @@ def main(ctx_factory=cl.create_some_context,
             if health_message:
                 logger.info(f"{rank=}:  {health_message}")
 
-        #if check_step(step, nrestart) and step != restart_step and not errors:
         if do_restart or errors:
             filename = restart_path + snapshot_pattern.format(
                 step=step, rank=rank, casename=casename)
@@ -675,7 +689,6 @@ def main(ctx_factory=cl.create_some_context,
             max_cfl = nodal_max(discr, "vol", local_cfl)
             log_cfl.set_quantity(max_cfl)
 
-        #if ((check_step(step, nviz) and step != restart_step) or errors):
         if do_viz or errors:
             tagged_cells = smoothness_indicator(discr,
                                                 state.mass,
@@ -776,29 +789,20 @@ if __name__ == "__main__":
     else:
         print(f"Default casename {casename}")
 
-    snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
-    restart_step = None
-    restart_name = None
     if args.restart_file:
-        print(f"Restarting from file {args.restart_file}")
-        file_path, file_name = os.path.split(args.restart_file)
-        restart_step = int(file_name.split("-")[1])
-        restart_name = (file_name.split("-")[0]).replace("'", "")
-        print(f"step {restart_step}")
-        print(f"name {restart_name}")
+        restart_file = (args.restart_file).replace("'", "")
+        print(f"Restarting from file: {restart_file}")
 
     input_file = None
     if args.input_file:
         input_file = args.input_file.replace("'", "")
-        print(f"Reading user input from {args.input_file}")
+        print(f"Reading user input from file: {input_file}")
     else:
         print("No user input file, using default values")
 
     print(f"Running {sys.argv[0]}\n")
-    main(restart_step=restart_step,
-         restart_name=restart_name,
+    main(restart_file=restart_file,
          user_input_file=input_file,
-         snapshot_pattern=snapshot_pattern,
          use_profiling=args.profile,
          use_lazy_eval=args.lazy,
          use_logmgr=args.log)
