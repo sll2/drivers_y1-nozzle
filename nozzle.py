@@ -789,6 +789,7 @@ if __name__ == "__main__":
     else:
         print(f"Default casename {casename}")
 
+    restart_file = None
     if args.restart_file:
         restart_file = (args.restart_file).replace("'", "")
         print(f"Restarting from file: {restart_file}")
