@@ -481,6 +481,7 @@ def main(ctx_factory=cl.create_some_context,
     }
 
     snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
+    restart_step = None
     if restart_file is None:
         local_mesh, global_nelements = generate_and_distribute_mesh(
             comm,
