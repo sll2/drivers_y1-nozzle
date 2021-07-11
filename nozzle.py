@@ -726,7 +726,7 @@ def main(ctx_factory=cl.create_some_context,
         except MyRuntimeError:
             if rank == 0:
                 logger.info("Errors detected; attempting graceful exit.")
-            my_write_viz(step=step, t=t, state=state)
+            my_write_viz(step=step, t=t, dt=dt, state=state)
             my_write_restart(step=step, t=t, state=state)
             raise
 
