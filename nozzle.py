@@ -632,23 +632,6 @@ def main(ctx_factory=cl.create_some_context,
                                          kappa=kappa_sc)) +
             sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma))
 
-    # def my_write_status(step, t, dt, dv, state):
-    #    from grudge.op import nodal_min, nodal_max
-    #    p_min = nodal_min(discr, "vol", dv.pressure)
-    #    p_max = nodal_max(discr, "vol", dv.pressure)
-    #    t_min = nodal_min(discr, "vol", dv.temperature)
-    #    t_max = nodal_max(discr, "vol", dv.temperature)
-    #    if constant_cfl:
-    #        cfl = current_cfl
-    #    else:
-    #        from mirgecom.viscous import get_viscous_cfl
-    #        cfl = nodal_max(discr, "vol",
-    #                        get_viscous_cfl(discr, eos, dt, state))
-    #    if rank == 0:
-    #        logger.info(f"Step: {step}, T: {t}, DT: {dt}, CFL: {cfl}\n"
-    #                    f"----- Pressure({p_min}, {p_max})\n"
-    #                    f"----- Temperature({t_min}, {t_max})\n")
-
     def my_write_viz(step, t, dt, state, dv=None, tagged_cells=None, ts_field=None):
         if dv is None:
             dv = eos.dependent_vars(state)
@@ -739,11 +722,6 @@ def main(ctx_factory=cl.create_some_context,
                 if dv is None:
                     dv = eos.dependent_vars(state)
                 my_write_viz(step=step, t=t, dt=dt, state=state, dv=dv)
-
-            # if do_status:  # needed because logging fails to make output
-            #     if dv is None:
-            #         dv = eos.dependent_vars(state)
-            #     my_write_status(step=step, t=t, dt=dt, dv=dv, state=state)
 
         except MyRuntimeError:
             if rank == 0:
