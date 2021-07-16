@@ -404,14 +404,12 @@ def main(ctx_factory=cl.create_some_context,
         ramp_interval=ramp_interval,
         t_ramp_start=t_ramp_start
     ):
-        if t > t_ramp_start:
-            rampPressure = min(
-                finalP, startP + (t - t_ramp_start)/ramp_interval *
-                (finalP - startP)
-            )
-        else:
-            rampPressure = startP
-        return rampPressure
+        return actx.np.where(
+            actx.np.greater(t, t_ramp_start),
+            actx.np.minimum(
+                finalP,
+                startP + (t - t_ramp_start) / ramp_interval * (finalP - startP)),
+            startP)
 
     class IsentropicInflow:
         def __init__(self, *, dim=1, direc=0, T0=298, P0=1e5, mach=0.01, p_fun=None):
@@ -446,8 +444,8 @@ def main(ctx_factory=cl.create_some_context,
             )
             rho = pressure/temperature/gas_const
 
-            velocity = np.zeros(shape=(self._dim, ))
-            velocity[self._direc] = self._mach*math.sqrt(gamma*pressure/rho)
+            velocity = np.zeros(self._dim, dtype=object)
+            velocity[self._direc] = self._mach*actx.np.sqrt(gamma*pressure/rho)
 
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
@@ -523,9 +521,11 @@ def main(ctx_factory=cl.create_some_context,
         amplitude = 1.0/current_dt/25.0
         x0 = 0.05
 
-        return (amplitude * actx.np.where(
-            nodes[0] > x0, zeros + ((nodes[0] - x0) / thickness) *
-            ((nodes[0] - x0) / thickness), zeros + 0.0))
+        return amplitude * actx.np.where(
+            actx.np.greater(nodes[-1], x0),
+            zeros + ((nodes[0] - x0) / thickness) * ((nodes[0] - x0) / thickness),
+            zeros + 0.0,
+        )
 
     zeros = 0 * nodes[0]
     sponge_sigma = gen_sponge()
