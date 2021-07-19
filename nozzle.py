@@ -30,7 +30,6 @@ import numpy as np
 import pyopencl as cl
 import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
-from functools import partial
 import math
 
 from meshmode.array_context import PyOpenCLArrayContext
@@ -39,20 +38,19 @@ from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
-from grudge.op import nodal_max
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import make_conserved
 from mirgecom.artificial_viscosity import (av_operator, smoothness_indicator)
-from mirgecom.inviscid import get_inviscid_cfl
 from mirgecom.simutil import (
-    inviscid_sim_timestep,
     check_step,
-    generate_and_distribute_mesh, write_visfile,
+    generate_and_distribute_mesh,
+    write_visfile,
     check_naninf_local,
-    check_range_local
+    check_range_local,
+    get_sim_timestep
 )
 from mirgecom.restart import write_restart_file
 from mirgecom.io import make_init_message
@@ -70,15 +68,21 @@ from mirgecom.initializers import (Uniform, PlanarDiscontinuity)
 from mirgecom.eos import IdealSingleGas
 from mirgecom.transport import SimpleTransport
 
-from logpyle import IntervalTimer
-
+from logpyle import IntervalTimer, set_dt
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (
     initialize_logmgr, logmgr_add_many_discretization_quantities,
-    logmgr_add_cl_device_info, logmgr_set_time, LogUserQuantity
+    logmgr_add_cl_device_info, logmgr_set_time, LogUserQuantity,
+    set_sim_state
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MyRuntimeError(RuntimeError):
+    """Simple exception to kill the simulation."""
+
+    pass
 
 
 def get_pseudo_y0_mesh():
@@ -155,9 +159,6 @@ def main(ctx_factory=cl.create_some_context,
          use_logmgr=False,
          use_lazy_eval=False):
     """Drive the Y0 nozzle example."""
-
-    snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
-
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -190,12 +191,21 @@ def main(ctx_factory=cl.create_some_context,
                     cl_tools.ImmediateAllocator(queue)))
 
     # default input values that will be read from input (if they exist)
+
+    # default i/o junk frequencies
     nviz = 100
     nrestart = 100
     nhealth = 100
     nstatus = 1
+
+    # default timestepping control
     current_dt = 5e-8
     t_final = 5.0e-6
+    current_cfl = 1.0
+    current_t = 0
+    constant_cfl = False
+    current_step = 0
+
     order = 1
     alpha_sc = 0.5
     s0_sc = -5.0
@@ -281,17 +291,10 @@ def main(ctx_factory=cl.create_some_context,
         timestepper = lsrk54_step
     if integrator == "lsrk144":
         timestepper = lsrk144_step
-    restart_path = "restart_data/"
-    viz_path = "viz_data/"
 
     dim = 3
-    current_cfl = 1.0
     vel_inflow = np.zeros(shape=(dim, ))
     vel_outflow = np.zeros(shape=(dim, ))
-    current_t = 0
-    constant_cfl = False
-    checkpoint_t = current_t
-    current_step = 0
 
     # working gas: CO2 #
     #   gamma = 1.289
@@ -480,7 +483,11 @@ def main(ctx_factory=cl.create_some_context,
         DTAG_BOUNDARY("Wall"): wall
     }
 
-    snapshot_pattern = "{casename}-{step:06d}-{rank:04d}.pkl"
+    viz_path = "viz_data/"
+    restart_path = "restart_data/"
+    snapshot_pattern = restart_path+"/{cname}-{step:06d}-{rank:04d}.pkl"
+    vizname = viz_path + casename
+
     restart_step = None
     if restart_file is None:
         local_mesh, global_nelements = generate_and_distribute_mesh(
@@ -606,15 +613,6 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info(init_message)
 
-    get_timestep = partial(inviscid_sim_timestep,
-                           discr=discr,
-                           t=current_t,
-                           dt=current_dt,
-                           cfl=current_cfl,
-                           eos=eos,
-                           t_final=t_final,
-                           constant_cfl=constant_cfl)
-
     def sponge(cv, cv_ref, sigma):
         return (sigma*(cv_ref - cv))
 
@@ -634,101 +632,137 @@ def main(ctx_factory=cl.create_some_context,
                                          kappa=kappa_sc)) +
             sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma))
 
-    def my_checkpoint(step, t, dt, state, force=False):
-        do_health = force or check_step(step, nhealth) and step > 0
-        do_viz = force or check_step(step, nviz)
-        do_status = force or check_step(step, nstatus)
-        do_restart = force or check_step(step, nrestart)
-
-        # do not overwrite a restart file on the first step
-        if step == restart_step:
-            filename = restart_path + snapshot_pattern.format(
-                step=step, rank=rank, casename=casename)
-            if restart_file == filename:
-                do_restart = False
-
-        if do_viz or do_health:
+    def my_write_viz(step, t, dt, state, dv=None, tagged_cells=None, ts_field=None):
+        if dv is None:
             dv = eos.dependent_vars(state)
+        if tagged_cells is None:
+            tagged_cells = smoothness_indicator(discr, state.mass, s0=s0_sc,
+                                                kappa=kappa_sc)
+        if ts_field is None:
+            ts_field, cfl, dt = my_get_timestep(t, dt, state)
 
-        errors = False
-        if do_health:
-            health_message = ""
-            if check_naninf_local(discr, "vol", dv.pressure):
-                errors = True
-                health_message += "Invalid pressure data found.\n"
-            elif check_range_local(discr,
-                                   "vol",
-                                   dv.pressure,
-                                   min_value=0.1,
-                                   max_value=2.0e6):
-                errors = True
-                health_message += "Pressure data failed health check.\n"
+        viz_fields = [("cv", state),
+                      ("dv", dv),
+                      ("sponge_sigma", gen_sponge()),
+                      ("tagged_cells", tagged_cells),
+                      ("dt" if constant_cfl else "cfl", ts_field)]
+        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+                      step=step, t=t, overwrite=True)
 
-        errors = comm.allreduce(errors, MPI.LOR)
-        if errors:
-            if rank == 0:
-                logger.info("Fluid solution failed health check.")
-            if health_message:
-                logger.info(f"{rank=}:  {health_message}")
-
-        if do_restart or errors:
-            filename = restart_path + snapshot_pattern.format(
-                step=step, rank=rank, casename=casename)
-            restart_dictionary = {
+    def my_write_restart(step, t, state):
+        rst_fname = snapshot_pattern.format(cname=casename, step=step, rank=rank)
+        if rst_fname != restart_file:
+            rst_data = {
                 "local_mesh": local_mesh,
-                "order": order,
                 "state": state,
                 "t": t,
                 "step": step,
+                "order": order,
                 "global_nelements": global_nelements,
                 "num_parts": nparts
             }
-            write_restart_file(actx, restart_dictionary, filename, comm)
+            write_restart_file(actx, rst_data, rst_fname, comm)
 
-        if do_status or do_viz or errors:
-            local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
-            max_cfl = nodal_max(discr, "vol", local_cfl)
-            log_cfl.set_quantity(max_cfl)
+    def my_health_check(dv):
+        health_error = False
+        if check_naninf_local(discr, "vol", dv.pressure):
+            health_error = True
+            logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if do_viz or errors:
-            tagged_cells = smoothness_indicator(discr,
-                                                state.mass,
-                                                s0=s0_sc,
-                                                kappa=kappa_sc)
-            viz_fields = [("cv", state), ("dv", eos.dependent_vars(state)),
-                          ("sponge_sigma", gen_sponge()),
-                          ("tagged_cells", tagged_cells), ("cfl", local_cfl)]
-            write_visfile(discr,
-                          viz_fields,
-                          visualizer,
-                          vizname=viz_path + casename,
-                          step=step,
-                          t=t,
-                          overwrite=True,
-                          vis_timer=vis_timer)
+        if check_range_local(discr, "vol", dv.pressure, 1e-1, 2e6):
+            health_error = True
+            logger.info(f"{rank=}: Pressure range violation.")
 
-        if errors:
-            raise RuntimeError("Error detected by user checkpoint, exiting.")
+        return health_error
 
-        return dt
+    def my_get_timestep(t, dt, state):
+        t_remaining = max(0, t_final - t)
+        if constant_cfl:
+            from mirgecom.viscous import get_viscous_timestep
+            ts_field = current_cfl * get_viscous_timestep(discr, eos=eos, cv=state)
+            from grudge.op import nodal_min
+            dt = nodal_min(discr, "vol", ts_field)
+            cfl = current_cfl
+        else:
+            from mirgecom.viscous import get_viscous_cfl
+            ts_field = get_viscous_cfl(discr, eos=eos, dt=dt, cv=state)
+            from grudge.op import nodal_max
+            cfl = nodal_max(discr, "vol", ts_field)
+
+        return ts_field, cfl, min(t_remaining, dt)
+
+    def my_pre_step(step, t, dt, state):
+        try:
+            dv = None
+
+            if logmgr:
+                logmgr.tick_before()
+
+            dt = get_sim_timestep(discr, state, t, dt, current_cfl, eos,
+                                  t_final, constant_cfl)
+
+            do_viz = check_step(step=step, interval=nviz)
+            do_restart = check_step(step=step, interval=nrestart)
+            do_health = check_step(step=step, interval=nhealth)
+
+            if do_health:
+                dv = eos.dependent_vars(state)
+                from mirgecom.simutil import allsync
+                health_errors = allsync(my_health_check(dv), comm,
+                                        op=MPI.LOR)
+                if health_errors:
+                    if rank == 0:
+                        logger.info("Fluid solution failed health check.")
+                    raise MyRuntimeError("Failed simulation health check.")
+
+            if do_restart:
+                my_write_restart(step=step, t=t, state=state)
+
+            if do_viz:
+                if dv is None:
+                    dv = eos.dependent_vars(state)
+                my_write_viz(step=step, t=t, dt=dt, state=state, dv=dv)
+
+        except MyRuntimeError:
+            if rank == 0:
+                logger.info("Errors detected; attempting graceful exit.")
+            my_write_viz(step=step, t=t, dt=dt, state=state)
+            my_write_restart(step=step, t=t, state=state)
+            raise
+
+        return state, dt
+
+    def my_post_step(step, t, dt, state):
+        # Logmgr needs to know about EOS, dt, dim?
+        # imo this is a design/scope flaw
+        if logmgr:
+            set_dt(logmgr, dt)
+            set_sim_state(logmgr, dim, state, eos)
+            logmgr.tick_after()
+        return state, dt
 
     if rank == 0:
         logging.info("Stepping.")
 
+    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+                                  current_cfl, eos, t_final, constant_cfl)
+
     (current_step, current_t, current_state) = \
         advance_state(rhs=my_rhs, timestepper=timestepper,
-                      checkpoint=my_checkpoint,
-                      get_timestep=get_timestep, state=current_state,
-                      t_final=t_final, t=current_t, istep=current_step,
-                      logmgr=logmgr, eos=eos, dim=dim)
+                      pre_step_callback=my_pre_step,
+                      post_step_callback=my_post_step,
+                      state=current_state, dt=current_dt,
+                      t_final=t_final, t=current_t, istep=current_step)
 
+    # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
-    my_checkpoint(current_step,
-                  t=current_t,
-                  dt=(current_t - checkpoint_t),
-                  state=current_state,
-                  force=True)
+    final_dv = eos.dependent_vars(current_state)
+    final_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+                                current_cfl, eos, t_final, constant_cfl)
+    my_write_viz(step=current_step, t=current_t, dt=final_dt, state=current_state,
+                 dv=final_dv)
+    my_write_restart(step=current_step, t=current_t, state=current_state)
 
     if logmgr:
         logmgr.close()
