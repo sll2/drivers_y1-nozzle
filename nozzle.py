@@ -522,7 +522,7 @@ def main(ctx_factory=cl.create_some_context,
         x0 = 0.05
 
         return amplitude * actx.np.where(
-            actx.np.greater(nodes[-1], x0),
+            actx.np.greater(nodes[0], x0),
             zeros + ((nodes[0] - x0) / thickness) * ((nodes[0] - x0) / thickness),
             zeros + 0.0,
         )
