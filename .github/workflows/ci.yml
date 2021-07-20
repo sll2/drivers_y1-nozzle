@@ -43,8 +43,9 @@ jobs:
             source emirge/config/activate_env.sh
             python -m pip install wheel
             python -m pip install pylint pyyaml
-            curl -L -O https://raw.githubusercontent.com/inducer/ci-support/master/run-pylint.py
-            python run-pylint.py --yaml-rcfile=.pylintrc.yml "$(basename $GITHUB_REPOSITORY)" nozzle.py && echo "Pylint found no errors."
+            #curl -L -O https://raw.githubusercontent.com/inducer/ci-support/master/run-pylint.py
+            #python run-pylint.py --yaml-rcfile=.pylintrc.yml "$(basename $GITHUB_REPOSITORY)" nozzle.py && echo "Pylint found no errors."
+            pylint nozzle.py
 
         - name: Eager smoke test
           run: |
