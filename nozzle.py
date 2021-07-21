@@ -170,7 +170,7 @@ def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=Fa
 
     # logging and profiling
     logmgr = initialize_logmgr(use_logmgr,
-        filename=f"{casename}.sqlite", mode="wu", mpi_comm=comm)
+        filename=f"{casename}.sqlite", mode="wo", mpi_comm=comm)
 
     if use_profiling:
         queue = cl.CommandQueue(cl_ctx,
