@@ -32,13 +32,16 @@ import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 import math
 
-from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
+from meshmode.array_context import (
+    PyOpenCLArrayContext,
+    PytatoPyOpenCLArrayContext
+)
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.navierstokes import ns_operator
@@ -151,46 +154,35 @@ def get_pseudo_y0_mesh():
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context,
-         casename="nozzle",
-         user_input_file=None,
-         restart_file=None,
-         use_profiling=False,
-         use_logmgr=False,
-         use_lazy_eval=False):
+def main(ctx_factory=cl.create_some_context, restart_filename=None,
+         use_profiling=False, use_logmgr=False, user_input_file=None,
+         actx_class=PyOpenCLArrayContext, casename=None):
     """Drive the Y0 nozzle example."""
+    cl_ctx = ctx_factory()
+
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
-    logmgr = initialize_logmgr(use_logmgr,
-                               filename=(f"{casename}.sqlite"),
-                               mode="wo",
-                               mpi_comm=comm)
+    if casename is None:
+        casename = "mirgecom"
 
-    cl_ctx = ctx_factory()
+    # logging and profiling
+    logmgr = initialize_logmgr(use_logmgr,
+        filename=f"{casename}.sqlite", mode="wo", mpi_comm=comm)
+
     if use_profiling:
-        if use_lazy_eval:
-            raise RuntimeError("Cannot run lazy with profiling.")
-        queue = cl.CommandQueue(
-            cl_ctx, properties=cl.command_queue_properties.PROFILING_ENABLE)
-        actx = PyOpenCLProfilingArrayContext(
-            queue,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-            logmgr=logmgr)
+        queue = cl.CommandQueue(cl_ctx,
+            properties=cl.command_queue_properties.PROFILING_ENABLE)
     else:
         queue = cl.CommandQueue(cl_ctx)
-        if use_lazy_eval:
-            from meshmode.array_context import PytatoPyOpenCLArrayContext
-            actx = PytatoPyOpenCLArrayContext(queue)
-        else:
-            actx = PyOpenCLArrayContext(
-                queue,
-                allocator=cl_tools.MemoryPool(
-                    cl_tools.ImmediateAllocator(queue)))
 
-    # default input values that will be read from input (if they exist)
+    actx = actx_class(
+        queue,
+        allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+
+    # Most of these can be set by the user input file
 
     # default i/o junk frequencies
     nviz = 100
@@ -199,25 +191,29 @@ def main(ctx_factory=cl.create_some_context,
     nstatus = 1
 
     # default timestepping control
-    current_dt = 5e-8
+    integrator = "rk4"
+    current_dt = 5.0e-8
     t_final = 5.0e-6
     current_cfl = 1.0
     current_t = 0
     constant_cfl = False
     current_step = 0
 
+    # default health status bounds
+    health_pres_min = 1.0e-1
+    health_pres_max = 2.0e6
+
+    # discretization and model control
     order = 1
     alpha_sc = 0.5
     s0_sc = -5.0
     kappa_sc = 0.5
-    integrator = "rk4"
 
     if user_input_file:
+        input_data = None
         if rank == 0:
             with open(user_input_file) as f:
                 input_data = yaml.load(f, Loader=yaml.FullLoader)
-        else:
-            input_data = None
         input_data = comm.bcast(input_data, root=0)
         try:
             nviz = int(input_data["nviz"])
@@ -261,6 +257,14 @@ def main(ctx_factory=cl.create_some_context,
             pass
         try:
             integrator = input_data["integrator"]
+        except KeyError:
+            pass
+        try:
+            health_pres_min = float(input_data["health_pres_min"])
+        except KeyError:
+            pass
+        try:
+            health_pres_max = float(input_data["health_pres_max"])
         except KeyError:
             pass
 
@@ -404,14 +408,12 @@ def main(ctx_factory=cl.create_some_context,
         ramp_interval=ramp_interval,
         t_ramp_start=t_ramp_start
     ):
-        if t > t_ramp_start:
-            rampPressure = min(
-                finalP, startP + (t - t_ramp_start)/ramp_interval *
-                (finalP - startP)
-            )
-        else:
-            rampPressure = startP
-        return rampPressure
+        return actx.np.where(
+            actx.np.greater(t, t_ramp_start),
+            actx.np.minimum(
+                finalP,
+                startP + (t - t_ramp_start) / ramp_interval * (finalP - startP)),
+            startP)
 
     class IsentropicInflow:
         def __init__(self, *, dim=1, direc=0, T0=298, P0=1e5, mach=0.01, p_fun=None):
@@ -446,8 +448,8 @@ def main(ctx_factory=cl.create_some_context,
             )
             rho = pressure/temperature/gas_const
 
-            velocity = np.zeros(shape=(self._dim, ))
-            velocity[self._direc] = self._mach*math.sqrt(gamma*pressure/rho)
+            velocity = np.zeros(self._dim, dtype=object)
+            velocity[self._direc] = self._mach*actx.np.sqrt(gamma*pressure/rho)
 
             mass = 0.0*x_vec[0] + rho
             mom = velocity*mass
@@ -484,28 +486,31 @@ def main(ctx_factory=cl.create_some_context,
     }
 
     viz_path = "viz_data/"
-    restart_path = "restart_data/"
-    snapshot_pattern = restart_path+"/{cname}-{step:06d}-{rank:04d}.pkl"
     vizname = viz_path + casename
+    restart_path = "restart_data/"
+    restart_pattern = (
+        restart_path + "{cname}-{step:06d}-{rank:04d}.pkl"
+    )
 
-    restart_step = None
-    if restart_file is None:
-        local_mesh, global_nelements = generate_and_distribute_mesh(
-            comm,
-            get_pseudo_y0_mesh
-        )
-        local_nelements = local_mesh.nelements
+    if restart_filename:  # read the grid from restart data
+        restart_filename = f"{restart_filename}-{rank:04d}.pkl"
 
-    else:  # Restart
         from mirgecom.restart import read_restart_data
-        restart_data = read_restart_data(actx, restart_file)
-        restart_step = restart_data["step"]
+        restart_data = read_restart_data(actx, restart_filename)
+        current_step = restart_data["step"]
+        current_t = restart_data["t"]
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
         global_nelements = restart_data["global_nelements"]
         restart_order = int(restart_data["order"])
 
         assert comm.Get_size() == restart_data["num_parts"]
+    else:
+        local_mesh, global_nelements = generate_and_distribute_mesh(
+            comm,
+            get_pseudo_y0_mesh
+        )
+        local_nelements = local_mesh.nelements
 
     if rank == 0:
         logging.info("Making discretization")
@@ -523,25 +528,20 @@ def main(ctx_factory=cl.create_some_context,
         amplitude = 1.0/current_dt/25.0
         x0 = 0.05
 
-        return (amplitude * actx.np.where(
-            nodes[0] > x0, zeros + ((nodes[0] - x0) / thickness) *
-            ((nodes[0] - x0) / thickness), zeros + 0.0))
+        return amplitude * actx.np.where(
+            actx.np.greater(nodes[0], x0),
+            zeros + ((nodes[0] - x0) / thickness) * ((nodes[0] - x0) / thickness),
+            zeros + 0.0,
+        )
 
     zeros = 0 * nodes[0]
     sponge_sigma = gen_sponge()
     ref_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
 
-    if restart_file is None:
+    if restart_filename:
         if rank == 0:
-            logging.info("Initializing soln.")
-        # for Discontinuity initial conditions
-        current_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
-        # for uniform background initial condition
-        #current_state = bulk_init(nodes, eos=eos)
-    else:
-        current_t = restart_data["t"]
-        current_step = restart_step
-
+            logging.info("Restarting soln.")
+        current_state = restart_data["state"]
         if restart_order != order:
             restart_discr = EagerDGDiscretization(
                 actx,
@@ -552,12 +552,17 @@ def main(ctx_factory=cl.create_some_context,
             connection = make_same_mesh_connection(
                 actx,
                 discr.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol"))
-
+                restart_discr.discr_from_dd("vol")
+            )
             restart_state = restart_data["state"]
             current_state = connection(restart_state)
-        else:
-            current_state = restart_data["state"]
+    else:
+        if rank == 0:
+            logging.info("Initializing soln.")
+        # for Discontinuity initial conditions
+        current_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
+        # for uniform background initial condition
+        #current_state = bulk_init(nodes, eos=eos)
 
     vis_timer = None
     log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
@@ -618,19 +623,13 @@ def main(ctx_factory=cl.create_some_context,
 
     def my_rhs(t, state):
         return (
-            ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos) +
-            make_conserved(dim,
-                           q=av_operator(discr,
-                                         q=state.join(),
-                                         boundaries=boundaries,
-                                         boundary_kwargs={
-                                             "time": t,
-                                             "eos": eos
-                                         },
-                                         alpha=alpha_sc,
-                                         s0=s0_sc,
-                                         kappa=kappa_sc)) +
-            sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma))
+            ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos)
+            + make_conserved(
+                dim, q=av_operator(discr, q=state.join(), boundaries=boundaries,
+                                   boundary_kwargs={"time": t, "eos": eos},
+                                   alpha=alpha_sc, s0=s0_sc, kappa=kappa_sc)
+            ) + sponge(cv=state, cv_ref=ref_state, sigma=sponge_sigma)
+        )
 
     def my_write_viz(step, t, dt, state, dv=None, tagged_cells=None, ts_field=None):
         if dv is None:
@@ -650,9 +649,9 @@ def main(ctx_factory=cl.create_some_context,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, state):
-        rst_fname = snapshot_pattern.format(cname=casename, step=step, rank=rank)
-        if rst_fname != restart_file:
-            rst_data = {
+        restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
+        if restart_fname != restart_filename:
+            restart_data = {
                 "local_mesh": local_mesh,
                 "state": state,
                 "t": t,
@@ -661,7 +660,7 @@ def main(ctx_factory=cl.create_some_context,
                 "global_nelements": global_nelements,
                 "num_parts": nparts
             }
-            write_restart_file(actx, rst_data, rst_fname, comm)
+            write_restart_file(actx, restart_data, restart_fname, comm)
 
     def my_health_check(dv):
         health_error = False
@@ -669,7 +668,8 @@ def main(ctx_factory=cl.create_some_context,
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if check_range_local(discr, "vol", dv.pressure, 1e-1, 2e6):
+        if check_range_local(discr, "vol", dv.pressure,
+                             health_pres_min, health_pres_max):
             health_error = True
             logger.info(f"{rank=}: Pressure range violation.")
 
@@ -698,8 +698,8 @@ def main(ctx_factory=cl.create_some_context,
             if logmgr:
                 logmgr.tick_before()
 
-            dt = get_sim_timestep(discr, state, t, dt, current_cfl, eos,
-                                  t_final, constant_cfl)
+            ts_field, cfl, dt = my_get_timestep(t, dt, state)
+            log_cfl.set_quantity(cfl)
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -758,9 +758,7 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = eos.dependent_vars(current_state)
-    final_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
-                                current_cfl, eos, t_final, constant_cfl)
-    my_write_viz(step=current_step, t=current_t, dt=final_dt, state=current_state,
+    my_write_viz(step=current_step, t=current_t, dt=current_dt, state=current_state,
                  dv=final_dv)
     my_write_restart(step=current_step, t=current_t, state=current_state)
 
@@ -780,40 +778,18 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
         description="MIRGE-Com Isentropic Nozzle Driver")
-    parser.add_argument("-r",
-                        "--restart_file",
-                        type=ascii,
-                        dest="restart_file",
-                        nargs="?",
-                        action="store",
-                        help="simulation restart file")
-    parser.add_argument("-i",
-                        "--input_file",
-                        type=ascii,
-                        dest="input_file",
-                        nargs="?",
-                        action="store",
-                        help="simulation config file")
-    parser.add_argument("-c",
-                        "--casename",
-                        type=ascii,
-                        dest="casename",
-                        nargs="?",
-                        action="store",
-                        help="simulation case name")
-    parser.add_argument("--profile",
-                        action="store_true",
-                        default=False,
+    parser.add_argument("-r", "--restart_file", type=ascii, dest="restart_file",
+                        nargs="?", action="store", help="simulation restart file")
+    parser.add_argument("-i", "--input_file", type=ascii, dest="input_file",
+                        nargs="?", action="store", help="simulation config file")
+    parser.add_argument("-c", "--casename", type=ascii, dest="casename",
+                        nargs="?", action="store", help="simulation case name")
+    parser.add_argument("--profile", action="store_true", default=False,
                         help="enable kernel profiling [OFF]")
-    parser.add_argument("--log",
-                        action="store_true",
-                        default=True,
+    parser.add_argument("--log", action="store_true", default=True,
                         help="enable logging profiling [ON]")
-    parser.add_argument("--lazy",
-                        action="store_true",
-                        default=False,
+    parser.add_argument("--lazy", action="store_true", default=False,
                         help="enable lazy evaluation [OFF]")
-
     args = parser.parse_args()
 
     # for writing output
@@ -824,10 +800,18 @@ if __name__ == "__main__":
     else:
         print(f"Default casename {casename}")
 
-    restart_file = None
+    if args.profile:
+        if args.lazy:
+            raise ValueError("Can't use lazy and profiling together.")
+        actx_class = PyOpenCLProfilingArrayContext
+    else:
+        actx_class = PytatoPyOpenCLArrayContext if args.lazy \
+            else PyOpenCLArrayContext
+
+    restart_filename = None
     if args.restart_file:
-        restart_file = (args.restart_file).replace("'", "")
-        print(f"Restarting from file: {restart_file}")
+        restart_filename = (args.restart_file).replace("'", "")
+        print(f"Restarting from file: {restart_filename}")
 
     input_file = None
     if args.input_file:
@@ -837,10 +821,8 @@ if __name__ == "__main__":
         print("No user input file, using default values")
 
     print(f"Running {sys.argv[0]}\n")
-    main(restart_file=restart_file,
-         user_input_file=input_file,
-         use_profiling=args.profile,
-         use_lazy_eval=args.lazy,
-         use_logmgr=args.log)
+    main(restart_filename=restart_filename, use_profiling=args.profile,
+         use_logmgr=args.log, user_input_file=input_file,
+         actx_class=actx_class, casename=casename)
 
 # vim: foldmethod=marker

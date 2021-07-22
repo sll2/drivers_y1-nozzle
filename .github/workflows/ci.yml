@@ -53,3 +53,9 @@ jobs:
             cd smoke_test
             ./run.sh
 
+        - name: Eager smoke restart test
+          run: |
+            source emirge/config/activate_env.sh
+            cd smoke_test
+            ./run_restart.sh
+
