@@ -154,9 +154,9 @@ def get_pseudo_y0_mesh():
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=False,
-         use_logmgr=False, user_input_file=None, actx_class=PyOpenCLArrayContext,
-         casename=None):
+def main(ctx_factory=cl.create_some_context, restart_filename=None,
+         use_profiling=False, use_logmgr=False, user_input_file=None,
+         actx_class=PyOpenCLArrayContext, casename=None):
     """Drive the Y0 nozzle example."""
     cl_ctx = ctx_factory()
 
@@ -475,16 +475,16 @@ def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=Fa
 
     viz_path = "viz_data/"
     vizname = viz_path + casename
-    rst_path = "restart_data/"
-    rst_pattern = (
-        rst_path + "{cname}-{step:04d}-{rank:04d}.pkl"
+    restart_path = "restart_data/"
+    restart_pattern = (
+        restart_path + "{cname}-{step:04d}-{rank:04d}.pkl"
     )
 
-    if rst_filename:  # read the grid from restart data
-        rst_filename = f"{rst_filename}-{rank:04d}.pkl"
+    if restart_filename:  # read the grid from restart data
+        restart_filename = f"{restart_filename}-{rank:04d}.pkl"
 
         from mirgecom.restart import read_restart_data
-        restart_data = read_restart_data(actx, rst_filename)
+        restart_data = read_restart_data(actx, restart_filename)
         current_step = restart_data["step"]
         current_t = restart_data["t"]
         local_mesh = restart_data["local_mesh"]
@@ -526,7 +526,7 @@ def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=Fa
     sponge_sigma = gen_sponge()
     ref_state = bulk_init(x_vec=nodes, eos=eos, time=0.0)
 
-    if rst_filename:
+    if restart_filename:
         if rank == 0:
             logging.info("Restarting soln.")
         if restart_order != order:
@@ -636,9 +636,9 @@ def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=Fa
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, state):
-        rst_fname = rst_pattern.format(cname=casename, step=step, rank=rank)
-        if rst_fname != rst_filename:
-            rst_data = {
+        restart_fname = restart_pattern.format(cname=casename, step=step, rank=rank)
+        if restart_fname != restart_filename:
+            restart_data = {
                 "local_mesh": local_mesh,
                 "state": state,
                 "t": t,
@@ -647,7 +647,7 @@ def main(ctx_factory=cl.create_some_context, rst_filename=None, use_profiling=Fa
                 "global_nelements": global_nelements,
                 "num_parts": nparts
             }
-            write_restart_file(actx, rst_data, rst_fname, comm)
+            write_restart_file(actx, restart_data, restart_fname, comm)
 
     def my_health_check(dv):
         health_error = False
@@ -796,10 +796,10 @@ if __name__ == "__main__":
         actx_class = PytatoPyOpenCLArrayContext if args.lazy \
             else PyOpenCLArrayContext
 
-    rst_filename = None
+    restart_filename = None
     if args.restart_file:
-        rst_filename = (args.restart_file).replace("'", "")
-        print(f"Restarting from file: {rst_filename}")
+        restart_filename = (args.restart_file).replace("'", "")
+        print(f"Restarting from file: {restart_filename}")
 
     input_file = None
     if args.input_file:
@@ -809,7 +809,8 @@ if __name__ == "__main__":
         print("No user input file, using default values")
 
     print(f"Running {sys.argv[0]}\n")
-    main(rst_filename=rst_filename, use_profiling=args.profile, use_logmgr=args.log,
-         user_input_file=input_file, actx_class=actx_class, casename=casename)
+    main(restart_filename=restart_filename, use_profiling=args.profile,
+         use_logmgr=args.log, user_input_file=input_file,
+         actx_class=actx_class, casename=casename)
 
 # vim: foldmethod=marker
