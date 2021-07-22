@@ -192,12 +192,16 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     # default timestepping control
     integrator = "rk4"
-    current_dt = 5e-8
+    current_dt = 5.0e-8
     t_final = 5.0e-6
     current_cfl = 1.0
     current_t = 0
     constant_cfl = False
     current_step = 0
+
+    # default health status bounds
+    health_pres_min = 1.0e-1
+    health_pres_max = 2.0e6
 
     # discretization and model control
     order = 1
@@ -253,6 +257,14 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             pass
         try:
             integrator = input_data["integrator"]
+        except KeyError:
+            pass
+        try:
+            health_pres_min = float(input_data["health_pres_min"])
+        except KeyError:
+            pass
+        try:
+            health_pres_max = float(input_data["health_pres_max"])
         except KeyError:
             pass
 
@@ -477,7 +489,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     vizname = viz_path + casename
     restart_path = "restart_data/"
     restart_pattern = (
-        restart_path + "{cname}-{step:04d}-{rank:04d}.pkl"
+        restart_path + "{cname}-{step:06d}-{rank:04d}.pkl"
     )
 
     if restart_filename:  # read the grid from restart data
@@ -529,6 +541,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if restart_filename:
         if rank == 0:
             logging.info("Restarting soln.")
+        current_state = restart_data["state"]
         if restart_order != order:
             restart_discr = EagerDGDiscretization(
                 actx,
@@ -655,7 +668,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if check_range_local(discr, "vol", dv.pressure, 1e-1, 2e6):
+        if check_range_local(discr, "vol", dv.pressure,
+                             health_pres_min, health_pres_max):
             health_error = True
             logger.info(f"{rank=}: Pressure range violation.")
 
@@ -684,8 +698,8 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             if logmgr:
                 logmgr.tick_before()
 
-            dt = get_sim_timestep(discr, state, t, dt, current_cfl, eos,
-                                  t_final, constant_cfl)
+            ts_field, cfl, dt = my_get_timestep(t, dt, state)
+            log_cfl.set_quantity(cfl)
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -744,9 +758,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = eos.dependent_vars(current_state)
-    final_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
-                                current_cfl, eos, t_final, constant_cfl)
-    my_write_viz(step=current_step, t=current_t, dt=final_dt, state=current_state,
+    my_write_viz(step=current_step, t=current_t, dt=current_dt, state=current_state,
                  dv=final_dv)
     my_write_restart(step=current_step, t=current_t, state=current_state)
 
