@@ -65,5 +65,7 @@ git pull
 git checkout y1-production
 git checkout parallel-lazy
 git checkout -b mrgy1
+git config --global user.email "ci@github.com"
+git config --global user.name "CI Runner"
 git merge y1-production
 cd ../
