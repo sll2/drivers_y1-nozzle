@@ -1,2 +1,2 @@
 #!/bin/bash
-mpirun -n 1 python -u -O -m mpi4py nozzle.py -i run_params.yaml
+mpirun -n 1 python -u -O -m mpi4py nozzle.py -i run_params.yaml --lazy
