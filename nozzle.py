@@ -786,7 +786,7 @@ if __name__ == "__main__":
                         nargs="?", action="store", help="simulation case name")
     parser.add_argument("--profile", action="store_true", default=False,
                         help="enable kernel profiling [OFF]")
-    parser.add_argument("--log", action="store_true", default=True,
+    parser.add_argument("--log", action="store_true", default=False,
                         help="enable logging profiling [ON]")
     parser.add_argument("--lazy", action="store_true", default=False,
                         help="enable lazy evaluation [OFF]")

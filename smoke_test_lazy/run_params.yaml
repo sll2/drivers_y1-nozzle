@@ -1,6 +1,6 @@
 nviz: 10
 nrestart: 10
-nhealth: 1
+nhealth: 10
 current_dt: 5.0e-8
 t_final: 5.e-7
 order:  1

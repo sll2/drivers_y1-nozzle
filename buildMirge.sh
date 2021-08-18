@@ -54,11 +54,11 @@ fi
 if [ -z ${CONDA_PATH+x} ]; then
   echo "CONDA_PATH unset, installing new conda with emirge"
   echo "./install.sh --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy"
-  ./install.sh --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy
+  ./install.sh --env-name=mirgeDriver.Y1nozzle-lazy $git_method --branch=parallel-lazy
 else
   echo "Using existing Conda installation, ${CONDA_PATH}"
   echo "./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy"
-  ./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy
+  ./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.Y1nozzle-lazy $git_method --branch=parallel-lazy
 fi
 cd mirgecom
 git pull
