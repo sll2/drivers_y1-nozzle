@@ -189,6 +189,7 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
     nrestart = 100
     nhealth = 100
     nstatus = 1
+    logDependent = 1
 
     # default timestepping control
     integrator = "rk4"
@@ -229,6 +230,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             pass
         try:
             nstatus = int(input_data["nstatus"])
+        except KeyError:
+            pass
+        try:
+            logDependent = int(input_data["logDependent"])
         except KeyError:
             pass
         try:
@@ -286,6 +291,10 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
         print(f"\tShock capturing parameters: alpha {alpha_sc}, "
               f"s0 {s0_sc}, kappa {kappa_sc}")
         print(f"\tTime integration {integrator}")
+        if logDependent:
+            print("\tDependent variable logging is ON.")
+        else:
+            print("\tDependent variable logging is OFF.")
         print("#### Simluation control data: ####")
 
     timestepper = rk4_step
@@ -569,9 +578,6 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_many_discretization_quantities(logmgr, discr, dim,
-                                                  extract_vars_for_logging,
-                                                  units_for_logging)
         logmgr_set_time(logmgr, current_step, current_t)
         logmgr.add_quantity(log_cfl, interval=nstatus)
 
@@ -579,13 +585,20 @@ def main(ctx_factory=cl.create_some_context, restart_filename=None,
             ("step.max", "step = {value}, "),
             ("t_sim.max", "sim time: {value:1.6e} s, "),
             ("cfl.max", "cfl = {value:1.4f}\n"),
-            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
-            ("max_pressure", "{value:1.9e})\n"),
-            ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
-            ("max_temperature", "{value:7g})\n"),
             ("t_step.max", "------- step walltime: {value:6g} s, "),
-            ("t_log.max", "log walltime: {value:6g} s")
+            ("t_log.max", "log walltime: {value:6g} s\n")
         ])
+
+        if logDependent:
+            logmgr_add_many_discretization_quantities(logmgr, discr, dim,
+                                                      extract_vars_for_logging,
+                                                      units_for_logging)
+            logmgr.add_watches([
+                ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
+                ("max_pressure", "{value:1.9e})\n"),
+                ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+                ("max_temperature", "{value:7g})\n"),
+            ])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
